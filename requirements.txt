@@ -4,3 +4,4 @@ django-cors-headers>=4.3,<5.0
 twilio>=9.0,<10.0
 python-dotenv>=1.0,<2.0
 gunicorn
+whitenoise>=6.6,<7.0
