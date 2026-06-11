@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -89,18 +90,26 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-# Set DATABASE_URL in .env (Neon) or on Render. Falls back to DB_* for local Postgres.
+# Local: DATABASE_URL in .env (gitignored). Render: set DATABASE_URL in the dashboard.
 
-DATABASE_URL = os.getenv('DATABASE_URL')
+IS_RENDER = os.getenv('RENDER') == 'true'
+DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('NEON_DATABASE_URL')
 
 if DATABASE_URL:
     DATABASES = {
-        'default': dj_database_url.parse(
-            DATABASE_URL,
+        'default': dj_database_url.config(
+            default=DATABASE_URL,
             conn_max_age=600,
             conn_health_checks=True,
+            ssl_require=True,
         ),
     }
+elif IS_RENDER:
+    raise ImproperlyConfigured(
+        'DATABASE_URL is not set on Render. '
+        'Open Render Dashboard → your web service → Environment → add DATABASE_URL '
+        'with your Neon connection string, then redeploy.'
+    )
 else:
     DATABASES = {
         'default': {
