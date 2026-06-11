@@ -22,19 +22,31 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(BASE_DIR / ".env")
 
+IS_RENDER = os.getenv('RENDER') == 'true'
+DEBUG = os.getenv('DEBUG', 'false' if IS_RENDER else 'true').lower() == 'true'
+
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+SECRET_KEY = os.getenv(
+    'SECRET_KEY',
+    'django-insecure-wd5q8#ln5792%aww$plmv^hs48s9t_)xcg5h(9pff8-0$8of6_',
+)
+if IS_RENDER and SECRET_KEY.startswith('django-insecure'):
+    raise ImproperlyConfigured(
+        'SECRET_KEY is not set on Render. '
+        'Generate one (e.g. python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())") '
+        'and add it in Render Dashboard → Environment.'
+    )
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
-
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-wd5q8#ln5792%aww$plmv^hs48s9t_)xcg5h(9pff8-0$8of6_'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv(
+        'ALLOWED_HOSTS',
+        'localhost,127.0.0.1,afrigaint-backend.onrender.com,'
+        'afrigaint.com,www.afrigaint.com,api.afrigaint.com',
+    ).split(',')
+    if host.strip()
+]
 
 
 # Application definition
@@ -92,7 +104,6 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 # Local: DATABASE_URL in .env (gitignored). Render: set DATABASE_URL in the dashboard.
 
-IS_RENDER = os.getenv('RENDER') == 'true'
 DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('NEON_DATABASE_URL')
 
 if DATABASE_URL:
@@ -172,26 +183,64 @@ STORAGES = {
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '120/hour',
+        'user': '2000/hour',
+    },
 }
 
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
         'CORS_ALLOWED_ORIGINS',
-        'http://localhost:3000,http://127.0.0.1:3000,https://afri-gaint.vercel.app',
+        'http://localhost:3000,http://127.0.0.1:3000,'
+        'https://afrigaint.com,https://www.afrigaint.com,'
+        'https://afri-gaint.vercel.app',
     ).split(',')
     if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
-
-CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS + [
-    'https://afrigaint-backend.onrender.com',
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
 ]
+
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(
+    CORS_ALLOWED_ORIGINS + [
+        'https://afrigaint-backend.onrender.com',
+        'https://afrigaint.com',
+        'https://www.afrigaint.com',
+        'https://api.afrigaint.com',
+    ]
+))
+
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_HTTPONLY = True
+    CSRF_COOKIE_HTTPONLY = True
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_HSTS_SECONDS = 31_536_000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    X_FRAME_OPTIONS = 'DENY'
 
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')

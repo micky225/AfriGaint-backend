@@ -1,8 +1,9 @@
-from django.contrib.auth import get_user_model, login, logout
+from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from backend.accounts.models import BetTicket, Currency, Deposit, MyAccount, PayoutSetting, Withdrawal
@@ -38,6 +39,10 @@ from backend.accounts.withdrawal_rules import get_withdrawal_gate
 User = get_user_model()
 
 
+class AuthRateThrottle(AnonRateThrottle):
+    rate = '15/minute'
+
+
 def currency_for_country_code(country_code: str) -> str:
     normalized = (country_code or "").strip()
     if normalized in {"+234", "234"}:
@@ -59,6 +64,7 @@ def auth_response(user, message: str, status_code=status.HTTP_200_OK):
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
@@ -90,12 +96,12 @@ class RegisterView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
-        login(request, user)
         return auth_response(user, "Logged in successfully.")
 
 
@@ -104,7 +110,6 @@ class LogoutView(APIView):
 
     def post(self, request):
         Token.objects.filter(user=request.user).delete()
-        logout(request)
         return Response({"message": "Logged out successfully."})
 
 
@@ -117,6 +122,7 @@ class MeView(APIView):
 
 class PasswordResetView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         serializer = PasswordResetSerializer(data=request.data)
