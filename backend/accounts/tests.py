@@ -7,7 +7,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from backend.accounts.deposit_rules import calculate_deposit_credit, get_min_deposit
-from backend.accounts.models import AccountTransaction, Currency, MyAccount, TransactionStatus
+from backend.accounts.models import AccountTransaction, Currency, Deposit, MyAccount, TransactionStatus
 from backend.accounts.models import BetTicket
 from backend.accounts.services.betting import BettingError, place_bet
 from backend.accounts.models import PayoutSetting, PayoutType
@@ -17,6 +17,7 @@ from backend.accounts.services.deposit import (
     process_deposit,
 )
 from backend.accounts.services.withdrawal import WithdrawalError, process_withdrawal
+from backend.accounts.services.moolre import initiate_payment_flow
 from backend.accounts.validators import validate_password_length
 
 User = get_user_model()
@@ -32,7 +33,7 @@ MOOLRE_SETTINGS = {
 
 class DepositRulesTests(TestCase):
     def test_minimum_deposit_amounts(self):
-        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("400"))
+        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("1"))
         self.assertEqual(get_min_deposit(Currency.NGN), Decimal("3000"))
 
     def test_bonus_only_at_or_above_threshold(self):
@@ -56,7 +57,7 @@ class DepositServiceTests(TestCase):
 
     def test_rejects_below_minimum(self):
         with self.assertRaises(DepositError):
-            process_deposit(self.account, Decimal("100"))
+            process_deposit(self.account, Decimal("0.50"))
 
     def test_credits_balance_one_to_one_with_bonus_reported(self):
         result = process_deposit(self.account, Decimal("3000"))
@@ -171,6 +172,40 @@ class BettingTests(TestCase):
         self.assertEqual(response.data["code"], "insufficient_balance")
 
 
+class MoolrePaymentFlowTests(TestCase):
+    @patch("backend.accounts.services.moolre.initiate_checkout")
+    def test_otp_verification_triggers_second_payment_request(self, mock_checkout):
+        mock_checkout.side_effect = [
+            {
+                "payment_status": "verification_complete",
+                "message": "Phone no. Verification Successful.",
+                "provider_reference": "",
+                "provider_response": {"code": "TV01", "status": 1},
+            },
+            {
+                "payment_status": "pending",
+                "message": "Approve the payment prompt on your phone.",
+                "provider_reference": "moolre-ref-uuid",
+                "provider_response": {"code": "TR099", "status": 1},
+            },
+        ]
+
+        result = initiate_payment_flow(
+            "0535999462",
+            "1.00",
+            externalref="DEP-TEST",
+            otp_code="386720",
+            session_id="all",
+        )
+
+        self.assertEqual(mock_checkout.call_count, 2)
+        self.assertEqual(result["payment_status"], "pending")
+        self.assertEqual(result["provider_reference"], "moolre-ref-uuid")
+        second_kwargs = mock_checkout.call_args_list[1].kwargs
+        self.assertEqual(second_kwargs.get("otp_code"), "")
+        self.assertEqual(second_kwargs.get("session_id"), "")
+
+
 @override_settings(**MOOLRE_SETTINGS)
 class DepositApiTests(TestCase):
     def setUp(self):
@@ -179,7 +214,7 @@ class DepositApiTests(TestCase):
         self.token, _ = Token.objects.get_or_create(user=self.user)
         self.account = self.user.my_account
 
-    @patch("backend.accounts.services.deposit.initiate_checkout")
+    @patch("backend.accounts.services.deposit.initiate_payment_flow")
     def test_create_deposit_initiates_moolre_payment(self, mock_initiate):
         mock_initiate.return_value = {
             "payment_status": "pending",
@@ -202,7 +237,49 @@ class DepositApiTests(TestCase):
         tx = AccountTransaction.objects.get(reference=reference)
         self.assertEqual(tx.status, TransactionStatus.PENDING)
 
-    @patch("backend.accounts.services.deposit.initiate_checkout")
+    @patch("backend.accounts.services.deposit.initiate_payment_flow")
+    def test_otp_retry_sends_session_id_to_moolre(self, mock_initiate):
+        mock_initiate.side_effect = [
+            {
+                "payment_status": "otp_required",
+                "message": "Enter OTP",
+                "session_id": "all",
+            },
+            {
+                "payment_status": "pending",
+                "message": "Approve the payment prompt on your phone.",
+                "provider_reference": "moolre-ref-2",
+            },
+        ]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        first = self.client.post(
+            "/api/auth/account/deposits/",
+            {"amount": "1.00", "method": "momo", "network": "mtn"},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 200)
+        reference = first.data["deposit"]["reference"]
+        self.assertEqual(first.data["deposit"]["session_id"], "all")
+
+        second = self.client.post(
+            "/api/auth/account/deposits/",
+            {
+                "amount": "1.00",
+                "reference": reference,
+                "otp_code": "123456",
+                "network": "mtn",
+            },
+            format="json",
+        )
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(second.data["deposit"]["payment_status"], "pending")
+        self.assertEqual(mock_initiate.call_count, 2)
+        _, kwargs = mock_initiate.call_args
+        self.assertEqual(kwargs["otp_code"], "123456")
+        self.assertEqual(kwargs["session_id"], "all")
+        self.assertEqual(Deposit.objects.filter(transaction__reference=reference).count(), 1)
+
+    @patch("backend.accounts.services.deposit.initiate_payment_flow")
     def test_webhook_completes_pending_deposit(self, mock_initiate):
         mock_initiate.return_value = {
             "payment_status": "pending",
@@ -233,13 +310,13 @@ class DepositApiTests(TestCase):
         self.assertEqual(self.account.withdrawal_deposit_count, 1)
 
     def test_complete_deposit_by_reference_is_idempotent(self):
-        result = process_deposit(self.account, Decimal("400"))
+        result = process_deposit(self.account, Decimal("1"))
         first = complete_deposit_by_reference(result["reference"])
         second = complete_deposit_by_reference(result["reference"])
         self.account.refresh_from_db()
         self.assertEqual(first["payment_status"], "completed")
         self.assertEqual(second["payment_status"], "completed")
-        self.assertEqual(self.account.current_balance, Decimal("400.00"))
+        self.assertEqual(self.account.current_balance, Decimal("1.00"))
 
     def test_rejects_short_password_on_register(self):
         response = self.client.post(

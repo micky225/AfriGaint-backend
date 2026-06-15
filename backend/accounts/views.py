@@ -46,7 +46,7 @@ User = get_user_model()
 
 
 class AuthRateThrottle(AnonRateThrottle):
-    rate = '15/minute'
+    rate = '60/minute'
 
 
 def currency_for_country_code(country_code: str) -> str:
@@ -196,6 +196,7 @@ class AccountDepositsView(APIView):
                 network=data.get("network") or data.get("provider") or "mtn",
                 otp_code=data.get("otp_code", ""),
                 reference=data.get("reference", ""),
+                session_id=data.get("session_id", ""),
             )
         except DepositError as exc:
             return Response({"detail": exc.message, "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
@@ -212,6 +213,9 @@ class AccountDepositsView(APIView):
         elif payment_status == "otp_required":
             message = result.get("message") or "Enter the OTP sent to your phone."
             status_code = status.HTTP_200_OK
+        elif payment_status == "verification_complete":
+            message = result.get("message") or "Verification successful. Check your phone to approve payment."
+            status_code = status.HTTP_202_ACCEPTED
         else:
             message = result.get("message") or "Approve the payment prompt on your phone."
             status_code = status.HTTP_202_ACCEPTED

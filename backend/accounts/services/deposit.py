@@ -16,7 +16,7 @@ from backend.accounts.models import (
 )
 from backend.accounts.services.moolre import (
     MoolreError,
-    initiate_checkout,
+    initiate_payment_flow,
     is_successful_status_response,
     resolve_moolre_channel,
 )
@@ -66,6 +66,7 @@ def _deposit_result_payload(
     payment_status: str = "completed",
     message: str = "",
     provider_reference: str = "",
+    session_id: str = "",
 ) -> dict:
     gate = get_withdrawal_gate(account.currency, account.withdrawal_deposit_count)
     return {
@@ -82,6 +83,7 @@ def _deposit_result_payload(
         "payment_status": payment_status,
         "message": message,
         "provider_reference": provider_reference,
+        "session_id": session_id,
     }
 
 
@@ -197,11 +199,13 @@ def initiate_deposit_payment(
     network: str = "mtn",
     otp_code: str = "",
     reference: str = "",
+    session_id: str = "",
 ) -> dict:
     currency = _validate_deposit_amount(account, amount)
     payer_phone = phone_number or account.user.phone
     channel = resolve_moolre_channel(network)
     bonus, total_credit = calculate_deposit_credit(amount, currency)
+    deposit_record = None
 
     with transaction.atomic():
         account = MyAccount.objects.select_for_update().get(pk=account.pk)
@@ -216,6 +220,9 @@ def initiate_deposit_payment(
                 )
             except AccountTransaction.DoesNotExist:
                 raise DepositError("Deposit not found.", code="deposit_not_found") from None
+
+            amount = tx.amount
+            bonus, total_credit = calculate_deposit_credit(amount, currency)
 
             if tx.status == TransactionStatus.COMPLETED:
                 completed_bonus, _ = calculate_deposit_credit(tx.amount, currency)
@@ -233,6 +240,18 @@ def initiate_deposit_payment(
                 )
             if tx.status != TransactionStatus.PENDING:
                 raise DepositError("This deposit can no longer be updated.", code="deposit_not_pending")
+
+            deposit_record, _ = Deposit.objects.get_or_create(
+                transaction=tx,
+                defaults={
+                    "phone_number": payer_phone,
+                    "provider": "moolre",
+                },
+            )
+            if not payer_phone:
+                payer_phone = deposit_record.phone_number or payer_phone
+            if not session_id:
+                session_id = deposit_record.session_id
         else:
             reference = f"DEP-{uuid.uuid4().hex[:12].upper()}"
             tx = AccountTransaction.objects.create(
@@ -246,27 +265,45 @@ def initiate_deposit_payment(
                 reference=reference,
                 note="Awaiting USSD payment confirmation",
             )
-            Deposit.objects.create(
+            deposit_record = Deposit.objects.create(
                 transaction=tx,
                 phone_number=payer_phone,
                 provider="moolre",
             )
 
+    if otp_code and not session_id:
+        raise DepositError(
+            "Payment session expired. Start the deposit again.",
+            code="session_required",
+        )
+
     try:
-        provider_result = initiate_checkout(
+        provider_result = initiate_payment_flow(
             payer_phone,
             amount,
             externalref=reference,
             channel=channel,
             otp_code=otp_code,
+            session_id=session_id,
         )
     except MoolreError as exc:
-        fail_deposit_by_reference(reference, reason=exc.message)
+        if not otp_code:
+            fail_deposit_by_reference(reference, reason=exc.message)
         raise DepositError(exc.message, code=exc.code) from exc
 
     provider_reference = provider_result.get("provider_reference") or ""
+    stored_session_id = provider_result.get("session_id") or session_id
+    if deposit_record is None:
+        deposit_record = Deposit.objects.filter(transaction__reference=reference).first()
+
+    if stored_session_id and deposit_record and deposit_record.session_id != stored_session_id:
+        deposit_record.session_id = stored_session_id
+        deposit_record.save(update_fields=["session_id"])
+
     if provider_reference:
-        AccountTransaction.objects.filter(pk=tx.pk).update(provider_reference=provider_reference)
+        AccountTransaction.objects.filter(pk=tx.pk, provider_reference="").update(
+            provider_reference=provider_reference
+        )
 
     payment_status = provider_result["payment_status"]
     message = provider_result.get("message") or ""
@@ -282,6 +319,7 @@ def initiate_deposit_payment(
         payment_status=payment_status,
         message=message,
         provider_reference=provider_reference,
+        session_id=stored_session_id,
     )
 
 

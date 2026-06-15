@@ -138,6 +138,7 @@ class Deposit(models.Model):
     transaction = models.OneToOneField(AccountTransaction, on_delete=models.CASCADE, related_name="deposit")
     phone_number = models.CharField(max_length=20, blank=True, default="")
     provider = models.CharField(max_length=60, blank=True, default="")
+    session_id = models.CharField(max_length=120, blank=True, default="")
 
     def __str__(self):
         return f"Deposit - {self.transaction.reference}"
