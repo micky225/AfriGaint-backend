@@ -31,5 +31,12 @@ def calculate_deposit_bonus(amount: Decimal, currency: str) -> Decimal:
 
 
 def calculate_deposit_credit(amount: Decimal, currency: str) -> tuple[Decimal, Decimal]:
+    """
+    Return (bonus_amount, display_credit).
+
+    Display credit is always 1:1 with the deposited amount. The bonus is calculated
+    separately for reporting/promotions and is not added to the user's balance.
+    """
     bonus = calculate_deposit_bonus(amount, currency)
-    return bonus, (amount + bonus).quantize(Decimal("0.01"))
+    credited = amount.quantize(Decimal("0.01"))
+    return bonus, credited

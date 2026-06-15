@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from decimal import Decimal
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -28,7 +29,12 @@ from backend.accounts.serializers import (
     WithdrawalSerializer,
 )
 from backend.accounts.services.betting import BettingError, load_booking_slip, place_bet
-from backend.accounts.services.deposit import DepositError, process_deposit
+from backend.accounts.services.deposit import (
+    DepositError,
+    handle_moolre_webhook,
+    initiate_deposit_payment,
+    sync_deposit_status,
+)
 from backend.accounts.services.withdrawal import (
     WithdrawalError,
     get_total_pending_withdrawal,
@@ -183,30 +189,79 @@ class AccountDepositsView(APIView):
         data = serializer.validated_data
 
         try:
-            result = process_deposit(
+            result = initiate_deposit_payment(
                 account,
                 data["amount"],
-                method=data["method"],
-                provider=data.get("provider", ""),
                 phone_number=data.get("phone_number", ""),
+                network=data.get("network") or data.get("provider") or "mtn",
+                otp_code=data.get("otp_code", ""),
+                reference=data.get("reference", ""),
             )
         except DepositError as exc:
             return Response({"detail": exc.message, "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
 
-        message = "Deposit successful."
-        if result["bonus_amount"] > 0:
-            message = (
-                f"Deposit successful. You received a 50% bonus of "
-                f"{result['bonus_amount']} {result['currency']}."
-            )
+        payment_status = result.get("payment_status", "pending")
+        if payment_status == "completed":
+            message = "Deposit successful."
+            if Decimal(str(result.get("bonus_amount", 0))) > 0:
+                message = (
+                    f"Deposit successful. Display credit is {result['total_credited']} "
+                    f"{result['currency']} (1:1 with your payment)."
+                )
+            status_code = status.HTTP_201_CREATED
+        elif payment_status == "otp_required":
+            message = result.get("message") or "Enter the OTP sent to your phone."
+            status_code = status.HTTP_200_OK
+        else:
+            message = result.get("message") or "Approve the payment prompt on your phone."
+            status_code = status.HTTP_202_ACCEPTED
 
         return Response(
             {
                 "message": message,
                 "deposit": DepositResultSerializer(result).data,
             },
-            status=status.HTTP_201_CREATED,
+            status=status_code,
         )
+
+
+class DepositStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, reference):
+        account, _ = MyAccount.objects.get_or_create(user=request.user)
+        if not Deposit.objects.filter(
+            transaction__reference=reference,
+            transaction__account=account,
+        ).exists():
+            return Response({"detail": "Deposit not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            result = sync_deposit_status(reference)
+        except DepositError as exc:
+            return Response({"detail": exc.message, "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+
+        message = result.get("message") or "Deposit status updated."
+        if result.get("payment_status") == "completed":
+            message = "Deposit successful."
+
+        return Response(
+            {
+                "message": message,
+                "deposit": DepositResultSerializer(result).data,
+            }
+        )
+
+
+class MoolrePaymentWebhookView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        result = handle_moolre_webhook(request.data)
+        if result:
+            return Response({"message": "Deposit completed.", "reference": result["reference"]})
+        return Response({"message": "Webhook received."})
 
 
 class AccountWithdrawalsView(APIView):

@@ -245,3 +245,12 @@ if not DEBUG:
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '')
+
+MOOLRE_USER = os.environ.get('MOOLRE_USER', '')
+MOOLRE_PUB_KEY = os.environ.get('MOOLRE_PUB_KEY', '')
+MOOLRE_ACCOUNT_ID = os.environ.get('MOOLRE_ACCOUNT_ID', '')
+MOOLRE_SANDBOX = os.environ.get('MOOLRE_SANDBOX', 'false').lower() == 'true'
+MOOLRE_WEBHOOK_URL = os.environ.get(
+    'MOOLRE_WEBHOOK_URL',
+    'https://api.afrigaint.com/api/auth/payments/moolre/webhook/',
+)

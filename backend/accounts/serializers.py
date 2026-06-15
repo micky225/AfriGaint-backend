@@ -193,6 +193,9 @@ class CreateDepositSerializer(serializers.Serializer):
     )
     provider = serializers.CharField(max_length=60, required=False, allow_blank=True, default="")
     phone_number = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    network = serializers.CharField(max_length=20, required=False, allow_blank=True, default="mtn")
+    otp_code = serializers.CharField(max_length=10, required=False, allow_blank=True, default="")
+    reference = serializers.CharField(max_length=80, required=False, allow_blank=True, default="")
 
     def validate_amount(self, value):
         try:
@@ -224,6 +227,9 @@ class DepositResultSerializer(serializers.Serializer):
     withdrawal_deposit_count = serializers.IntegerField(required=False)
     withdrawals_unlocked = serializers.BooleanField(required=False)
     withdrawal_gate = WithdrawalGateSerializer(required=False)
+    payment_status = serializers.CharField(required=False)
+    message = serializers.CharField(required=False, allow_blank=True)
+    provider_reference = serializers.CharField(required=False, allow_blank=True)
 
 
 class CreateWithdrawalSerializer(serializers.Serializer):
