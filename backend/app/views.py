@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework.permissions import AllowAny
@@ -21,6 +22,11 @@ class OddsRateThrottle(AnonRateThrottle):
 class PublicOddsAPIView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [OddsRateThrottle]
+
+
+def tick_scripted_matches_throttled() -> None:
+    if cache.add("odds:tick_scripted_matches", "1", timeout=3):
+        tick_scripted_matches()
 
 
 def published_match_queryset():
@@ -50,7 +56,7 @@ def upcoming_matches_queryset(sport: str = ""):
 
 class UpcomingMatchesView(PublicOddsAPIView):
     def get(self, request):
-        tick_scripted_matches()
+        tick_scripted_matches_throttled()
 
         sport = (request.query_params.get("sport") or "").strip()
         try:
@@ -65,7 +71,7 @@ class UpcomingMatchesView(PublicOddsAPIView):
 
 class LiveMatchesView(PublicOddsAPIView):
     def get(self, request):
-        tick_scripted_matches()
+        tick_scripted_matches_throttled()
 
         matches = (
             published_match_queryset()
@@ -77,7 +83,7 @@ class LiveMatchesView(PublicOddsAPIView):
 
 class MatchDetailView(PublicOddsAPIView):
     def get(self, request, event_id):
-        tick_scripted_matches()
+        tick_scripted_matches_throttled()
 
         try:
             match = published_match_queryset().get(event_id=event_id)
@@ -88,7 +94,7 @@ class MatchDetailView(PublicOddsAPIView):
 
 class LeagueListView(PublicOddsAPIView):
     def get(self, request):
-        tick_scripted_matches()
+        tick_scripted_matches_throttled()
 
         sport = (request.query_params.get("sport") or "").strip()
         leagues = {}
@@ -108,7 +114,7 @@ class LeagueListView(PublicOddsAPIView):
 
 class TopMatchesView(PublicOddsAPIView):
     def get(self, request):
-        tick_scripted_matches()
+        tick_scripted_matches_throttled()
 
         sport = (request.query_params.get("sport") or "").strip()
         try:
@@ -122,7 +128,7 @@ class TopMatchesView(PublicOddsAPIView):
 
 class MatchSearchView(PublicOddsAPIView):
     def get(self, request):
-        tick_scripted_matches()
+        tick_scripted_matches_throttled()
 
         query = (request.query_params.get("q") or "").strip()
         sport = (request.query_params.get("sport") or "").strip()

@@ -64,6 +64,10 @@ def _ensure_configured():
         raise MoolreNotConfigured()
 
 
+def _request_timeout() -> float:
+    return max(3.0, float(getattr(settings, "MOOLRE_REQUEST_TIMEOUT_SECONDS", 15)))
+
+
 def extract_moolre_session_id(data: dict) -> str:
     raw = data.get("data")
     if isinstance(raw, str) and raw.strip():
@@ -150,7 +154,7 @@ def initiate_checkout(
 
     url = f"{_moolre_base_url()}/open/transact/payment"
     try:
-        response = requests.post(url, json=payload, headers=_moolre_headers(), timeout=30)
+        response = requests.post(url, json=payload, headers=_moolre_headers(), timeout=_request_timeout())
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.exception("Moolre initiate payment request failed")
@@ -214,7 +218,7 @@ def check_payment_status(externalref: str) -> dict:
     }
     url = f"{_moolre_base_url()}/open/transact/status"
     try:
-        response = requests.post(url, json=payload, headers=_moolre_headers(), timeout=30)
+        response = requests.post(url, json=payload, headers=_moolre_headers(), timeout=_request_timeout())
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.exception("Moolre payment status request failed")

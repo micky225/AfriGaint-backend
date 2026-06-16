@@ -250,6 +250,7 @@ MOOLRE_USER = os.environ.get('MOOLRE_USER', '')
 MOOLRE_PUB_KEY = os.environ.get('MOOLRE_PUB_KEY', '')
 MOOLRE_ACCOUNT_ID = os.environ.get('MOOLRE_ACCOUNT_ID', '')
 MOOLRE_SANDBOX = os.environ.get('MOOLRE_SANDBOX', 'false').lower() == 'true'
+MOOLRE_REQUEST_TIMEOUT_SECONDS = float(os.environ.get('MOOLRE_REQUEST_TIMEOUT_SECONDS', '15'))
 MOOLRE_WEBHOOK_URL = os.environ.get(
     'MOOLRE_WEBHOOK_URL',
     'https://api.afrigaint.com/api/auth/payments/moolre/webhook/',
