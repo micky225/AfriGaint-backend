@@ -308,6 +308,7 @@ class MatchSimulationTests(TestCase):
         ticket = BetTicket.objects.get(pk=leg.ticket_id)
         self.assertEqual(ticket.status, BetStatus.WON)
 
+
     def test_btts_yes_settles_immediately_on_second_goal(self):
         from django.contrib.auth import get_user_model
 
@@ -363,3 +364,44 @@ class MatchSimulationTests(TestCase):
         self.assertEqual(leg.status, LegStatus.WON)
         ticket = BetTicket.objects.get(pk=leg.ticket_id)
         self.assertEqual(ticket.status, BetStatus.WON)
+
+class MatchDiscoveryApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.league = League.objects.create(name="Division DI Honor", slug="division-di-honor-aruba", sport_key="soccer")
+        self.home = Team.objects.create(name="Famala FC", abbr="FAM")
+        self.away = Team.objects.create(name="Junior Britannia FC", abbr="JBR")
+        self.match = Match.objects.create(
+            event_id="division-di-honor-aruba-20260619",
+            league=self.league,
+            home_team=self.home,
+            away_team=self.away,
+            commence_at=timezone.now() + timedelta(hours=2),
+            sport_key="soccer",
+            is_published=True,
+            status="scheduled",
+            is_scripted=False,
+        )
+        self.match.add_market_from_template("match_result", {"home": "1.78", "draw": "3.84", "away": "4.88"})
+
+    def test_leagues_endpoint_includes_league_with_count(self):
+        response = self.client.get("/api/odds/leagues?sport=soccer")
+        self.assertEqual(response.status_code, 200)
+        league_row = next(item for item in response.data if item["league"] == "Division DI Honor")
+        self.assertEqual(league_row["matches"], 1)
+        self.assertEqual(league_row["sportKey"], "soccer")
+
+    def test_top_matches_endpoint_includes_created_match(self):
+        response = self.client.get("/api/odds/top-matches?sport=soccer")
+        self.assertEqual(response.status_code, 200)
+        event_ids = [item["eventId"] for item in response.data]
+        self.assertIn(self.match.event_id, event_ids)
+
+    def test_search_endpoint_matches_teams_and_league(self):
+        by_team = self.client.get("/api/odds/search?q=britannia&sport=soccer")
+        self.assertEqual(by_team.status_code, 200)
+        self.assertEqual(by_team.data[0]["eventId"], self.match.event_id)
+
+        by_league = self.client.get("/api/odds/search?q=division di honor&sport=soccer")
+        self.assertEqual(by_league.status_code, 200)
+        self.assertEqual(by_league.data[0]["eventId"], self.match.event_id)
