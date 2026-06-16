@@ -15,6 +15,7 @@ from backend.accounts.models import (
     User,
     Withdrawal,
 )
+from backend.accounts.services.deposit import complete_deposit_by_reference
 
 
 @admin.register(User)
@@ -75,6 +76,36 @@ class AccountTransactionAdmin(admin.ModelAdmin):
     list_display = ["reference", "account", "tx_type", "status", "method", "amount", "created_at"]
     list_filter = ["tx_type", "status", "method"]
     search_fields = ["reference", "account__user__phone", "provider_reference"]
+    actions = ["approve_manual_deposits"]
+
+    @admin.action(description="Approve selected manual NGN deposits")
+    def approve_manual_deposits(self, request, queryset):
+        approved = 0
+        skipped = 0
+        for tx in queryset.select_related("account"):
+            if (
+                tx.tx_type != "deposit"
+                or tx.status != "pending"
+                or tx.method != "bank"
+                or not hasattr(tx, "deposit")
+                or tx.deposit.provider != "manual_bank_ngn"
+            ):
+                skipped += 1
+                continue
+
+            result = complete_deposit_by_reference(
+                tx.reference,
+                provider_reference=tx.provider_reference,
+            )
+            if result:
+                approved += 1
+            else:
+                skipped += 1
+
+        if approved:
+            self.message_user(request, f"Approved {approved} manual deposit(s).")
+        if skipped:
+            self.message_user(request, f"Skipped {skipped} transaction(s).")
 
 
 @admin.register(Deposit)

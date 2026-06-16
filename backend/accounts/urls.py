@@ -11,6 +11,7 @@ urlpatterns = [
     path("account/summary/", views.AccountSummaryView.as_view(), name="account-summary"),
     path("account/transactions/", views.AccountTransactionsView.as_view(), name="account-transactions"),
     path("account/deposits/", views.AccountDepositsView.as_view(), name="account-deposits"),
+    path("account/deposit-options/", views.DepositOptionsView.as_view(), name="account-deposit-options"),
     path("account/deposits/<str:reference>/", views.DepositStatusView.as_view(), name="deposit-status"),
     path("payments/moolre/webhook/", views.MoolrePaymentWebhookView.as_view(), name="moolre-webhook"),
     path("account/withdrawals/", views.AccountWithdrawalsView.as_view(), name="account-withdrawals"),

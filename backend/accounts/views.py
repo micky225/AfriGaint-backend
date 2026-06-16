@@ -33,6 +33,7 @@ from backend.accounts.services.deposit import (
     DepositError,
     handle_moolre_webhook,
     initiate_deposit_payment,
+    submit_manual_bank_deposit,
     sync_deposit_status,
 )
 from backend.accounts.services.withdrawal import (
@@ -188,6 +189,24 @@ class AccountDepositsView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        if (account.currency or Currency.GHS) == Currency.NGN:
+            try:
+                result = submit_manual_bank_deposit(
+                    account,
+                    data["amount"],
+                    transaction_id=data.get("transaction_id", ""),
+                )
+            except DepositError as exc:
+                return Response({"detail": exc.message, "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response(
+                {
+                    "message": result.get("message") or "Deposit submitted. Waiting for admin confirmation.",
+                    "deposit": DepositResultSerializer(result).data,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
         try:
             result = initiate_deposit_payment(
                 account,
@@ -226,6 +245,35 @@ class AccountDepositsView(APIView):
                 "deposit": DepositResultSerializer(result).data,
             },
             status=status_code,
+        )
+
+
+class DepositOptionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        account, _ = MyAccount.objects.get_or_create(user=request.user)
+        currency = account.currency or Currency.GHS
+        minimum = str(get_withdrawal_gate(currency, account.withdrawal_deposit_count)["next_deposit_minimum"])
+
+        if currency == Currency.NGN:
+            return Response(
+                {
+                    "currency": currency,
+                    "mode": "manual_bank",
+                    "minimum_amount": minimum,
+                    "required_fields": ["amount", "transaction_id"],
+                    "note": "Submit your transfer reference for admin confirmation.",
+                }
+            )
+
+        return Response(
+            {
+                "currency": currency,
+                "mode": "ussd_momo",
+                "minimum_amount": minimum,
+                "required_fields": ["amount", "network", "phone_number"],
+            }
         )
 
 

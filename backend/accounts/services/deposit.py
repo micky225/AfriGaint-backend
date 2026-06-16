@@ -39,12 +39,6 @@ def _validate_deposit_amount(account: MyAccount, amount: Decimal) -> str:
         raise DepositError("Deposit amount must be greater than zero.")
 
     currency = account.currency or Currency.GHS
-    if currency != Currency.GHS:
-        raise DepositError(
-            "USSD deposits are only available for GHS accounts.",
-            code="unsupported_currency",
-        )
-
     minimum = get_next_deposit_minimum(currency, account.withdrawal_deposit_count)
     if amount < minimum:
         raise DepositError(
@@ -52,6 +46,12 @@ def _validate_deposit_amount(account: MyAccount, amount: Decimal) -> str:
             code="below_minimum",
         )
     return currency
+
+
+def _manual_reference_for_account(account: MyAccount) -> str:
+    digits = "".join(ch for ch in account.user.phone if ch.isdigit())
+    user_hint = digits[-6:] if len(digits) >= 6 else digits or str(account.user_id)
+    return f"DEP-NGN-{user_hint}-{uuid.uuid4().hex[:6].upper()}"
 
 
 def _deposit_result_payload(
@@ -202,6 +202,11 @@ def initiate_deposit_payment(
     session_id: str = "",
 ) -> dict:
     currency = _validate_deposit_amount(account, amount)
+    if currency != Currency.GHS:
+        raise DepositError(
+            "USSD deposits are only available for GHS accounts.",
+            code="unsupported_currency",
+        )
     payer_phone = phone_number or account.user.phone
     channel = resolve_moolre_channel(network)
     bonus, total_credit = calculate_deposit_credit(amount, currency)
@@ -323,6 +328,74 @@ def initiate_deposit_payment(
     )
 
 
+def submit_manual_bank_deposit(
+    account: MyAccount,
+    amount: Decimal,
+    *,
+    transaction_id: str,
+) -> dict:
+    currency = _validate_deposit_amount(account, amount)
+    if currency != Currency.NGN:
+        raise DepositError(
+            "Manual bank confirmation is only enabled for NGN accounts.",
+            code="unsupported_currency",
+        )
+
+    normalized_tx_id = (transaction_id or "").strip()
+    if not normalized_tx_id:
+        raise DepositError("Transaction ID is required.", code="transaction_id_required")
+
+    existing = AccountTransaction.objects.filter(
+        tx_type=TransactionType.DEPOSIT,
+        method=PaymentMethod.BANK,
+        provider_reference__iexact=normalized_tx_id,
+    ).first()
+    if existing and existing.account_id != account.id:
+        raise DepositError(
+            "This transaction ID is already linked to another account.",
+            code="transaction_id_in_use",
+        )
+
+    bonus, total_credit = calculate_deposit_credit(amount, currency)
+    note = f"Manual NGN deposit submitted by {account.user.phone}"
+    reference = _manual_reference_for_account(account)
+
+    with transaction.atomic():
+        account = MyAccount.objects.select_for_update().get(pk=account.pk)
+        _validate_deposit_amount(account, amount)
+
+        tx = AccountTransaction.objects.create(
+            account=account,
+            tx_type=TransactionType.DEPOSIT,
+            status=TransactionStatus.PENDING,
+            method=PaymentMethod.BANK,
+            amount=amount,
+            fee=Decimal("0"),
+            net_amount=total_credit,
+            reference=reference,
+            provider_reference=normalized_tx_id,
+            note=note[:255],
+        )
+        Deposit.objects.create(
+            transaction=tx,
+            phone_number=account.user.phone,
+            provider="manual_bank_ngn",
+        )
+
+    return _deposit_result_payload(
+        account,
+        reference=reference,
+        amount=amount,
+        bonus=bonus,
+        total_credit=total_credit,
+        currency=currency,
+        tx=tx,
+        payment_status="pending",
+        message="Deposit submitted. Waiting for admin confirmation.",
+        provider_reference=normalized_tx_id,
+    )
+
+
 def fail_deposit_by_reference(reference: str, *, reason: str = "") -> AccountTransaction | None:
     with transaction.atomic():
         try:
@@ -414,6 +487,25 @@ def sync_deposit_status(reference: str) -> dict:
 
     if tx.status != TransactionStatus.PENDING:
         raise DepositError("This deposit is no longer pending.", code="deposit_not_pending")
+
+    deposit = getattr(tx, "deposit", None)
+    if deposit and deposit.provider == "manual_bank_ngn":
+        pending_bonus, pending_credit = calculate_deposit_credit(
+            tx.amount,
+            tx.account.currency or Currency.GHS,
+        )
+        return _deposit_result_payload(
+            tx.account,
+            reference=tx.reference,
+            amount=tx.amount,
+            bonus=pending_bonus,
+            total_credit=pending_credit,
+            currency=tx.account.currency or Currency.GHS,
+            tx=tx,
+            payment_status="pending",
+            message="Deposit is pending admin confirmation.",
+            provider_reference=tx.provider_reference,
+        )
 
     try:
         status_data = check_payment_status(reference)

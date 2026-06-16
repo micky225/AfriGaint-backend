@@ -197,6 +197,7 @@ class CreateDepositSerializer(serializers.Serializer):
     otp_code = serializers.CharField(max_length=10, required=False, allow_blank=True, default="")
     reference = serializers.CharField(max_length=80, required=False, allow_blank=True, default="")
     session_id = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    transaction_id = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
 
     def validate_amount(self, value):
         try:

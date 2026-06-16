@@ -213,6 +213,11 @@ class DepositApiTests(TestCase):
         self.user = User.objects.create_user(phone="+233500000002", password="password12345")
         self.token, _ = Token.objects.get_or_create(user=self.user)
         self.account = self.user.my_account
+        self.ngn_user = User.objects.create_user(phone="+2348012349999", password="password12345")
+        self.ngn_token, _ = Token.objects.get_or_create(user=self.ngn_user)
+        self.ngn_account = self.ngn_user.my_account
+        self.ngn_account.currency = Currency.NGN
+        self.ngn_account.save(update_fields=["currency", "updated_at"])
 
     @patch("backend.accounts.services.deposit.initiate_payment_flow")
     def test_create_deposit_initiates_moolre_payment(self, mock_initiate):
@@ -229,7 +234,7 @@ class DepositApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["deposit"]["payment_status"], "pending")
-        self.assertEqual(response.data["deposit"]["bonus_amount"], "0.00")
+        self.assertEqual(response.data["deposit"]["bonus_amount"], "1500.00")
         self.assertEqual(response.data["deposit"]["total_credited"], "3000.00")
         self.account.refresh_from_db()
         self.assertEqual(self.account.current_balance, Decimal("0"))
@@ -350,6 +355,46 @@ class DepositApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         user = User.objects.get(phone="+2348012345678")
         self.assertEqual(user.my_account.currency, Currency.NGN)
+
+    def test_ngn_user_submits_manual_deposit_reference(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.ngn_token.key}")
+        response = self.client.post(
+            "/api/auth/account/deposits/",
+            {
+                "amount": "3000.00",
+                "method": "bank",
+                "transaction_id": "NGN-REF-12345",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["deposit"]["payment_status"], "pending")
+        reference = response.data["deposit"]["reference"]
+        tx = AccountTransaction.objects.get(reference=reference)
+        self.assertEqual(tx.method, "bank")
+        self.assertEqual(tx.status, TransactionStatus.PENDING)
+        self.assertEqual(tx.provider_reference, "NGN-REF-12345")
+        self.assertIn(self.ngn_user.phone, tx.note)
+
+    def test_ngn_manual_deposit_requires_transaction_id(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.ngn_token.key}")
+        response = self.client.post(
+            "/api/auth/account/deposits/",
+            {
+                "amount": "3000.00",
+                "method": "bank",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "transaction_id_required")
+
+    def test_ngn_deposit_options_returns_manual_mode(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.ngn_token.key}")
+        response = self.client.get("/api/auth/account/deposit-options/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["mode"], "manual_bank")
+        self.assertEqual(response.data["required_fields"], ["amount", "transaction_id"])
 
 
 class WithdrawalGateTests(TestCase):
