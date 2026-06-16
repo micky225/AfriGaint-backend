@@ -3,7 +3,7 @@ from decimal import Decimal
 from backend.accounts.models import Currency
 
 MIN_DEPOSIT = {
-    Currency.GHS: Decimal("1"),
+    Currency.GHS: Decimal("400"),
     Currency.NGN: Decimal("3000"),
 }
 

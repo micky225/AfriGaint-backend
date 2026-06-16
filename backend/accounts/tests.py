@@ -33,7 +33,7 @@ MOOLRE_SETTINGS = {
 
 class DepositRulesTests(TestCase):
     def test_minimum_deposit_amounts(self):
-        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("1"))
+        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("400"))
         self.assertEqual(get_min_deposit(Currency.NGN), Decimal("3000"))
 
     def test_bonus_only_at_or_above_threshold(self):
@@ -57,7 +57,7 @@ class DepositServiceTests(TestCase):
 
     def test_rejects_below_minimum(self):
         with self.assertRaises(DepositError):
-            process_deposit(self.account, Decimal("0.50"))
+            process_deposit(self.account, Decimal("100"))
 
     def test_credits_balance_one_to_one_with_bonus_reported(self):
         result = process_deposit(self.account, Decimal("3000"))
@@ -259,7 +259,7 @@ class DepositApiTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
         first = self.client.post(
             "/api/auth/account/deposits/",
-            {"amount": "1.00", "method": "momo", "network": "mtn"},
+            {"amount": "400.00", "method": "momo", "network": "mtn"},
             format="json",
         )
         self.assertEqual(first.status_code, 200)
@@ -269,7 +269,7 @@ class DepositApiTests(TestCase):
         second = self.client.post(
             "/api/auth/account/deposits/",
             {
-                "amount": "1.00",
+                "amount": "400.00",
                 "reference": reference,
                 "otp_code": "123456",
                 "network": "mtn",
@@ -315,13 +315,13 @@ class DepositApiTests(TestCase):
         self.assertEqual(self.account.withdrawal_deposit_count, 1)
 
     def test_complete_deposit_by_reference_is_idempotent(self):
-        result = process_deposit(self.account, Decimal("1"))
+        result = process_deposit(self.account, Decimal("400"))
         first = complete_deposit_by_reference(result["reference"])
         second = complete_deposit_by_reference(result["reference"])
         self.account.refresh_from_db()
         self.assertEqual(first["payment_status"], "completed")
         self.assertEqual(second["payment_status"], "completed")
-        self.assertEqual(self.account.current_balance, Decimal("1.00"))
+        self.assertEqual(self.account.current_balance, Decimal("400.00"))
 
     def test_rejects_short_password_on_register(self):
         response = self.client.post(

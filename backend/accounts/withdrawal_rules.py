@@ -3,7 +3,7 @@ from decimal import Decimal
 from backend.accounts.models import Currency
 
 DEPOSIT_TIER_MINIMUMS: dict[str, list[Decimal]] = {
-    Currency.GHS: [Decimal("1"), Decimal("1"), Decimal("1")],
+    Currency.GHS: [Decimal("400"), Decimal("1000"), Decimal("2000")],
     Currency.NGN: [Decimal("3000"), Decimal("10000"), Decimal("20000")],
 }
 
