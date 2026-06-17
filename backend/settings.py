@@ -15,6 +15,7 @@ from pathlib import Path
 
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
+from django.db.backends.signals import connection_created
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -119,7 +120,7 @@ elif IS_RENDER:
     raise ImproperlyConfigured(
         'DATABASE_URL is not set on Render. '
         'Open Render Dashboard → your web service → Environment → add DATABASE_URL '
-        'with your Neon connection string, then redeploy.'
+        'with your Postgres connection string, then redeploy.'
     )
 else:
     DATABASES = {
@@ -132,6 +133,15 @@ else:
             'PORT': os.getenv('DB_PORT', '5432'),
         }
     }
+
+
+def _set_postgres_search_path(sender, connection, **kwargs):
+    if connection.vendor == 'postgresql':
+        with connection.cursor() as cursor:
+            cursor.execute('SET search_path TO public')
+
+
+connection_created.connect(_set_postgres_search_path)
 
 
 # Password validation
