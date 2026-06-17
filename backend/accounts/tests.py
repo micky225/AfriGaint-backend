@@ -17,17 +17,17 @@ from backend.accounts.services.deposit import (
     process_deposit,
 )
 from backend.accounts.services.withdrawal import WithdrawalError, process_withdrawal
-from backend.accounts.services.moolre import initiate_payment_flow
+from backend.accounts.services.paystack import initialize_transaction, is_charge_success_webhook
 from backend.accounts.validators import validate_password_length
 
 User = get_user_model()
 
 
-MOOLRE_SETTINGS = {
-    "MOOLRE_USER": "test-user",
-    "MOOLRE_PUB_KEY": "test-pub-key",
-    "MOOLRE_ACCOUNT_ID": "100000157291",
-    "MOOLRE_SANDBOX": True,
+PAYSTACK_SETTINGS = {
+    "PAYSTACK_SECRET_KEY": "sk_test_secret",
+    "PAYSTACK_PUBLIC_KEY": "pk_test_public",
+    "PAYSTACK_CURRENCY": "GHS",
+    "PAYSTACK_CALLBACK_URL": "https://example.com/api/auth/payments/paystack/webhook/",
 }
 
 
@@ -172,41 +172,46 @@ class BettingTests(TestCase):
         self.assertEqual(response.data["code"], "insufficient_balance")
 
 
-class MoolrePaymentFlowTests(TestCase):
-    @patch("backend.accounts.services.moolre.initiate_checkout")
-    def test_otp_verification_triggers_second_payment_request(self, mock_checkout):
-        mock_checkout.side_effect = [
-            {
-                "payment_status": "verification_complete",
-                "message": "Phone no. Verification Successful.",
-                "provider_reference": "",
-                "provider_response": {"code": "TV01", "status": 1},
+@override_settings(**PAYSTACK_SETTINGS)
+class PaystackPaymentTests(TestCase):
+    @patch("backend.accounts.services.paystack.requests.post")
+    def test_initialize_transaction_returns_checkout_url(self, mock_post):
+        mock_post.return_value.json.return_value = {
+            "status": True,
+            "message": "Authorization URL created",
+            "data": {
+                "authorization_url": "https://checkout.paystack.com/abc123",
+                "access_code": "access-code-1",
+                "reference": "DEP-TEST",
             },
-            {
-                "payment_status": "pending",
-                "message": "Approve the payment prompt on your phone.",
-                "provider_reference": "moolre-ref-uuid",
-                "provider_response": {"code": "TR099", "status": 1},
-            },
-        ]
+        }
+        mock_post.return_value.raise_for_status = lambda: None
 
-        result = initiate_payment_flow(
-            "0535999462",
-            "1.00",
-            externalref="DEP-TEST",
-            otp_code="386720",
-            session_id="all",
+        result = initialize_transaction(
+            email="user@example.com",
+            amount="400.00",
+            reference="DEP-TEST",
         )
 
-        self.assertEqual(mock_checkout.call_count, 2)
         self.assertEqual(result["payment_status"], "pending")
-        self.assertEqual(result["provider_reference"], "moolre-ref-uuid")
-        second_kwargs = mock_checkout.call_args_list[1].kwargs
-        self.assertEqual(second_kwargs.get("otp_code"), "")
-        self.assertEqual(second_kwargs.get("session_id"), "")
+        self.assertEqual(result["payment_url"], "https://checkout.paystack.com/abc123")
+        self.assertEqual(result["access_code"], "access-code-1")
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["reference"], "DEP-TEST")
+        self.assertEqual(payload["amount"], 40000)
+        self.assertEqual(payload["currency"], "GHS")
 
 
-@override_settings(**MOOLRE_SETTINGS)
+class PaystackWebhookParsingTests(TestCase):
+    def test_charge_success_webhook(self):
+        payload = {
+            "event": "charge.success",
+            "data": {"reference": "DEP-ABC123", "status": "success"},
+        }
+        self.assertTrue(is_charge_success_webhook(payload))
+
+
+@override_settings(**PAYSTACK_SETTINGS)
 class DepositApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -219,12 +224,14 @@ class DepositApiTests(TestCase):
         self.ngn_account.currency = Currency.NGN
         self.ngn_account.save(update_fields=["currency", "updated_at"])
 
-    @patch("backend.accounts.services.deposit.initiate_payment_flow")
-    def test_create_deposit_initiates_moolre_payment(self, mock_initiate):
-        mock_initiate.return_value = {
+    @patch("backend.accounts.services.deposit.initialize_transaction")
+    def test_create_deposit_returns_paystack_url(self, mock_initialize):
+        mock_initialize.return_value = {
             "payment_status": "pending",
-            "message": "Approve the payment prompt on your phone.",
-            "provider_reference": "moolre-ref-1",
+            "message": "Complete payment on the Paystack checkout page.",
+            "payment_url": "https://checkout.paystack.com/abc123",
+            "access_code": "access-code-1",
+            "provider_reference": "DEP-REF-1",
         }
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
         response = self.client.post(
@@ -234,6 +241,10 @@ class DepositApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["deposit"]["payment_status"], "pending")
+        self.assertEqual(
+            response.data["deposit"]["payment_url"],
+            "https://checkout.paystack.com/abc123",
+        )
         self.assertEqual(response.data["deposit"]["bonus_amount"], "1500.00")
         self.assertEqual(response.data["deposit"]["total_credited"], "3000.00")
         self.account.refresh_from_db()
@@ -241,55 +252,18 @@ class DepositApiTests(TestCase):
         reference = response.data["deposit"]["reference"]
         tx = AccountTransaction.objects.get(reference=reference)
         self.assertEqual(tx.status, TransactionStatus.PENDING)
+        mock_initialize.assert_called_once()
+        self.assertEqual(mock_initialize.call_args.kwargs["reference"], reference)
 
-    @patch("backend.accounts.services.deposit.initiate_payment_flow")
-    def test_otp_retry_sends_session_id_to_moolre(self, mock_initiate):
-        mock_initiate.side_effect = [
-            {
-                "payment_status": "otp_required",
-                "message": "Enter OTP",
-                "session_id": "all",
-            },
-            {
-                "payment_status": "pending",
-                "message": "Approve the payment prompt on your phone.",
-                "provider_reference": "moolre-ref-2",
-            },
-        ]
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
-        first = self.client.post(
-            "/api/auth/account/deposits/",
-            {"amount": "400.00", "method": "momo", "network": "mtn"},
-            format="json",
-        )
-        self.assertEqual(first.status_code, 200)
-        reference = first.data["deposit"]["reference"]
-        self.assertEqual(first.data["deposit"]["session_id"], "all")
-
-        second = self.client.post(
-            "/api/auth/account/deposits/",
-            {
-                "amount": "400.00",
-                "reference": reference,
-                "otp_code": "123456",
-                "network": "mtn",
-            },
-            format="json",
-        )
-        self.assertEqual(second.status_code, 202)
-        self.assertEqual(second.data["deposit"]["payment_status"], "pending")
-        self.assertEqual(mock_initiate.call_count, 2)
-        _, kwargs = mock_initiate.call_args
-        self.assertEqual(kwargs["otp_code"], "123456")
-        self.assertEqual(kwargs["session_id"], "all")
-        self.assertEqual(Deposit.objects.filter(transaction__reference=reference).count(), 1)
-
-    @patch("backend.accounts.services.deposit.initiate_payment_flow")
-    def test_webhook_completes_pending_deposit(self, mock_initiate):
-        mock_initiate.return_value = {
+    @patch("backend.accounts.views.verify_webhook_signature", return_value=True)
+    @patch("backend.accounts.services.deposit.initialize_transaction")
+    def test_webhook_completes_pending_deposit(self, mock_initialize, _mock_sig):
+        mock_initialize.return_value = {
             "payment_status": "pending",
-            "message": "Approve the payment prompt on your phone.",
-            "provider_reference": "moolre-ref-1",
+            "message": "Complete payment on the Paystack checkout page.",
+            "payment_url": "https://checkout.paystack.com/abc123",
+            "access_code": "access-code-1",
+            "provider_reference": "DEP-REF-1",
         }
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
         create_response = self.client.post(
@@ -300,14 +274,17 @@ class DepositApiTests(TestCase):
         reference = create_response.data["deposit"]["reference"]
 
         webhook_response = self.client.post(
-            "/api/auth/payments/moolre/webhook/",
+            "/api/auth/payments/paystack/webhook/",
             {
-                "status": 1,
-                "code": "P01",
-                "message": "Transaction Successful",
-                "data": {"externalref": reference, "transactionid": "31772290"},
+                "event": "charge.success",
+                "data": {
+                    "reference": reference,
+                    "status": "success",
+                    "id": 31772290,
+                },
             },
             format="json",
+            HTTP_X_PAYSTACK_SIGNATURE="test-signature",
         )
         self.assertEqual(webhook_response.status_code, 200)
         self.account.refresh_from_db()
@@ -388,6 +365,13 @@ class DepositApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "transaction_id_required")
+
+    def test_ghs_deposit_options_returns_paystack_mode(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        response = self.client.get("/api/auth/account/deposit-options/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["mode"], "paystack")
+        self.assertEqual(response.data["required_fields"], ["amount"])
 
     def test_ngn_deposit_options_returns_manual_mode(self):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.ngn_token.key}")

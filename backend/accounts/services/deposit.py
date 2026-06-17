@@ -1,6 +1,7 @@
 import uuid
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -14,12 +15,23 @@ from backend.accounts.models import (
     TransactionStatus,
     TransactionType,
 )
-from backend.accounts.services.moolre import (
-    MoolreError,
-    initiate_payment_flow,
-    is_successful_status_response,
-    resolve_moolre_channel,
+from backend.accounts.services.paystack import (
+    PaystackError,
+    extract_provider_reference_from_webhook,
+    extract_reference_from_webhook,
+    initialize_transaction,
+    is_charge_success_webhook,
+    is_successful_verify_response,
+    verify_transaction,
 )
+# Moolre integration disabled — kept for reference.
+# from backend.accounts.services.moolre import (
+#     MoolreError,
+#     create_pos_payment_link,
+#     extract_externalref,
+#     extract_provider_reference,
+#     is_successful_status_response,
+# )
 from backend.accounts.withdrawal_rules import (
     REQUIRED_DEPOSITS_FOR_WITHDRAWAL,
     get_next_deposit_minimum,
@@ -67,6 +79,9 @@ def _deposit_result_payload(
     message: str = "",
     provider_reference: str = "",
     session_id: str = "",
+    payment_url: str = "",
+    access_code: str = "",
+    paystack_public_key: str = "",
 ) -> dict:
     gate = get_withdrawal_gate(account.currency, account.withdrawal_deposit_count)
     return {
@@ -84,6 +99,9 @@ def _deposit_result_payload(
         "message": message,
         "provider_reference": provider_reference,
         "session_id": session_id,
+        "payment_url": payment_url,
+        "access_code": access_code,
+        "paystack_public_key": paystack_public_key,
     }
 
 
@@ -196,122 +214,57 @@ def initiate_deposit_payment(
     amount: Decimal,
     *,
     phone_number: str = "",
-    network: str = "mtn",
-    otp_code: str = "",
-    reference: str = "",
-    session_id: str = "",
 ) -> dict:
     currency = _validate_deposit_amount(account, amount)
     if currency != Currency.GHS:
         raise DepositError(
-            "USSD deposits are only available for GHS accounts.",
+            "Online deposits are only available for GHS accounts.",
             code="unsupported_currency",
         )
     payer_phone = phone_number or account.user.phone
-    channel = resolve_moolre_channel(network)
     bonus, total_credit = calculate_deposit_credit(amount, currency)
-    deposit_record = None
+    reference = f"DEP-{uuid.uuid4().hex[:12].upper()}"
 
     with transaction.atomic():
         account = MyAccount.objects.select_for_update().get(pk=account.pk)
         _validate_deposit_amount(account, amount)
 
-        if reference:
-            try:
-                tx = AccountTransaction.objects.select_for_update().get(
-                    reference=reference,
-                    account=account,
-                    tx_type=TransactionType.DEPOSIT,
-                )
-            except AccountTransaction.DoesNotExist:
-                raise DepositError("Deposit not found.", code="deposit_not_found") from None
-
-            amount = tx.amount
-            bonus, total_credit = calculate_deposit_credit(amount, currency)
-
-            if tx.status == TransactionStatus.COMPLETED:
-                completed_bonus, _ = calculate_deposit_credit(tx.amount, currency)
-                return _deposit_result_payload(
-                    account,
-                    reference=tx.reference,
-                    amount=tx.amount,
-                    bonus=completed_bonus,
-                    total_credit=tx.net_amount,
-                    currency=currency,
-                    tx=tx,
-                    payment_status="completed",
-                    message="Deposit already completed.",
-                    provider_reference=tx.provider_reference,
-                )
-            if tx.status != TransactionStatus.PENDING:
-                raise DepositError("This deposit can no longer be updated.", code="deposit_not_pending")
-
-            deposit_record, _ = Deposit.objects.get_or_create(
-                transaction=tx,
-                defaults={
-                    "phone_number": payer_phone,
-                    "provider": "moolre",
-                },
-            )
-            if not payer_phone:
-                payer_phone = deposit_record.phone_number or payer_phone
-            if not session_id:
-                session_id = deposit_record.session_id
-        else:
-            reference = f"DEP-{uuid.uuid4().hex[:12].upper()}"
-            tx = AccountTransaction.objects.create(
-                account=account,
-                tx_type=TransactionType.DEPOSIT,
-                status=TransactionStatus.PENDING,
-                method=PaymentMethod.MOMO,
-                amount=amount,
-                fee=Decimal("0"),
-                net_amount=amount,
-                reference=reference,
-                note="Awaiting USSD payment confirmation",
-            )
-            deposit_record = Deposit.objects.create(
-                transaction=tx,
-                phone_number=payer_phone,
-                provider="moolre",
-            )
-
-    if otp_code and not session_id:
-        raise DepositError(
-            "Payment session expired. Start the deposit again.",
-            code="session_required",
+        tx = AccountTransaction.objects.create(
+            account=account,
+            tx_type=TransactionType.DEPOSIT,
+            status=TransactionStatus.PENDING,
+            method=PaymentMethod.MOMO,
+            amount=amount,
+            fee=Decimal("0"),
+            net_amount=amount,
+            reference=reference,
+            note="Awaiting Paystack payment",
+        )
+        Deposit.objects.create(
+            transaction=tx,
+            phone_number=payer_phone,
+            provider="paystack",
         )
 
     try:
-        provider_result = initiate_payment_flow(
-            payer_phone,
-            amount,
-            externalref=reference,
-            channel=channel,
-            otp_code=otp_code,
-            session_id=session_id,
+        provider_result = initialize_transaction(
+            email=account.user.email or f"{account.user.phone}@afrigaint.com",
+            amount=amount,
+            reference=reference,
+            metadata={"account_id": account.pk, "user_id": account.user_id},
         )
-    except MoolreError as exc:
-        if not otp_code:
-            fail_deposit_by_reference(reference, reason=exc.message)
+    except PaystackError as exc:
+        fail_deposit_by_reference(reference, reason=exc.message)
         raise DepositError(exc.message, code=exc.code) from exc
 
     provider_reference = provider_result.get("provider_reference") or ""
-    stored_session_id = provider_result.get("session_id") or session_id
-    if deposit_record is None:
-        deposit_record = Deposit.objects.filter(transaction__reference=reference).first()
-
-    if stored_session_id and deposit_record and deposit_record.session_id != stored_session_id:
-        deposit_record.session_id = stored_session_id
-        deposit_record.save(update_fields=["session_id"])
+    payment_url = provider_result.get("payment_url") or ""
+    access_code = provider_result.get("access_code") or ""
 
     if provider_reference:
         AccountTransaction.objects.filter(pk=tx.pk, provider_reference="").update(
             provider_reference=provider_reference
         )
-
-    payment_status = provider_result["payment_status"]
-    message = provider_result.get("message") or ""
 
     return _deposit_result_payload(
         account,
@@ -321,10 +274,12 @@ def initiate_deposit_payment(
         total_credit=total_credit,
         currency=currency,
         tx=tx,
-        payment_status=payment_status,
-        message=message,
+        payment_status="pending",
+        message=provider_result.get("message") or "Complete payment on the Paystack checkout page.",
         provider_reference=provider_reference,
-        session_id=stored_session_id,
+        payment_url=payment_url,
+        access_code=access_code,
+        paystack_public_key=getattr(settings, "PAYSTACK_PUBLIC_KEY", ""),
     )
 
 
@@ -453,14 +408,12 @@ def complete_deposit_by_reference(reference: str, *, provider_reference: str = "
         tx.account,
         tx.amount,
         phone_number=tx.deposit.phone_number,
-        provider="moolre",
+        provider="paystack",
         tx=tx,
     )
 
 
 def sync_deposit_status(reference: str) -> dict:
-    from backend.accounts.services.moolre import check_payment_status
-
     try:
         tx = AccountTransaction.objects.select_related("account").get(
             reference=reference,
@@ -508,22 +461,17 @@ def sync_deposit_status(reference: str) -> dict:
         )
 
     try:
-        status_data = check_payment_status(reference)
-    except MoolreError as exc:
+        status_data = verify_transaction(reference)
+    except PaystackError as exc:
         raise DepositError(exc.message, code=exc.code) from exc
 
-    if is_successful_status_response(status_data):
+    if is_successful_verify_response(status_data):
         data = status_data.get("data") or {}
-        provider_reference = ""
-        if isinstance(data, dict):
-            provider_reference = str(data.get("thirdpartyref") or data.get("transactionid") or "")
+        provider_reference = str(data.get("id") or data.get("reference") or "")
         return complete_deposit_by_reference(reference, provider_reference=provider_reference)
 
-    txstatus = ""
-    if isinstance(status_data.get("data"), dict):
-        txstatus = str(status_data["data"].get("txstatus", ""))
-
-    if txstatus == "2":
+    data = status_data.get("data") or {}
+    if str(data.get("status", "")).lower() == "failed":
         fail_deposit_by_reference(reference, reason="Payment failed")
         raise DepositError("Payment failed.", code="payment_failed")
 
@@ -545,24 +493,16 @@ def sync_deposit_status(reference: str) -> dict:
     )
 
 
-def handle_moolre_webhook(payload: dict) -> dict | None:
-    if not is_successful_status_response(payload):
-        data = payload.get("data") or {}
-        externalref = ""
-        if isinstance(data, dict):
-            externalref = data.get("externalref") or ""
-        if externalref:
-            fail_deposit_by_reference(str(externalref), reason=payload.get("message") or "Payment failed")
+def handle_paystack_webhook(payload: dict) -> dict | None:
+    reference = extract_reference_from_webhook(payload)
+    provider_reference = extract_provider_reference_from_webhook(payload)
+
+    if not is_charge_success_webhook(payload):
+        if reference and payload.get("event") in {"charge.failed", "transfer.failed"}:
+            fail_deposit_by_reference(reference, reason=payload.get("message") or "Payment failed")
         return None
 
-    data = payload.get("data") or {}
-    externalref = ""
-    provider_reference = ""
-    if isinstance(data, dict):
-        externalref = str(data.get("externalref") or "")
-        provider_reference = str(data.get("thirdpartyref") or data.get("transactionid") or "")
-
-    if not externalref:
+    if not reference:
         return None
 
-    return complete_deposit_by_reference(externalref, provider_reference=provider_reference)
+    return complete_deposit_by_reference(reference, provider_reference=provider_reference)

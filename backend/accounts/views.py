@@ -1,5 +1,7 @@
 from django.contrib.auth import get_user_model
 from decimal import Decimal
+import logging
+
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -31,11 +33,12 @@ from backend.accounts.serializers import (
 from backend.accounts.services.betting import BettingError, load_booking_slip, place_bet
 from backend.accounts.services.deposit import (
     DepositError,
-    handle_moolre_webhook,
+    handle_paystack_webhook,
     initiate_deposit_payment,
     submit_manual_bank_deposit,
     sync_deposit_status,
 )
+from backend.accounts.services.paystack import extract_reference_from_webhook, verify_webhook_signature
 from backend.accounts.services.withdrawal import (
     WithdrawalError,
     get_total_pending_withdrawal,
@@ -44,6 +47,7 @@ from backend.accounts.services.withdrawal import (
 from backend.accounts.withdrawal_rules import get_withdrawal_gate
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class AuthRateThrottle(AnonRateThrottle):
@@ -212,10 +216,6 @@ class AccountDepositsView(APIView):
                 account,
                 data["amount"],
                 phone_number=data.get("phone_number", ""),
-                network=data.get("network") or data.get("provider") or "mtn",
-                otp_code=data.get("otp_code", ""),
-                reference=data.get("reference", ""),
-                session_id=data.get("session_id", ""),
             )
         except DepositError as exc:
             return Response({"detail": exc.message, "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
@@ -229,14 +229,8 @@ class AccountDepositsView(APIView):
                     f"{result['currency']} (1:1 with your payment)."
                 )
             status_code = status.HTTP_201_CREATED
-        elif payment_status == "otp_required":
-            message = result.get("message") or "Enter the OTP sent to your phone."
-            status_code = status.HTTP_200_OK
-        elif payment_status == "verification_complete":
-            message = result.get("message") or "Verification successful. Check your phone to approve payment."
-            status_code = status.HTTP_202_ACCEPTED
         else:
-            message = result.get("message") or "Approve the payment prompt on your phone."
+            message = result.get("message") or "Complete payment on the Paystack checkout page."
             status_code = status.HTTP_202_ACCEPTED
 
         return Response(
@@ -267,12 +261,16 @@ class DepositOptionsView(APIView):
                 }
             )
 
+        from django.conf import settings
+
         return Response(
             {
                 "currency": currency,
-                "mode": "ussd_momo",
+                "mode": "paystack",
                 "minimum_amount": minimum,
-                "required_fields": ["amount", "network", "phone_number"],
+                "required_fields": ["amount"],
+                "paystack_public_key": settings.PAYSTACK_PUBLIC_KEY,
+                "note": "You will be redirected to Paystack to complete your deposit.",
             }
         )
 
@@ -305,15 +303,37 @@ class DepositStatusView(APIView):
         )
 
 
-class MoolrePaymentWebhookView(APIView):
+class PaystackPaymentWebhookView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
 
     def post(self, request):
-        result = handle_moolre_webhook(request.data)
+        signature = request.headers.get("x-paystack-signature", "")
+        if not verify_webhook_signature(request.body, signature):
+            logger.warning("Paystack webhook rejected: invalid signature")
+            return Response({"detail": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST)
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        reference = extract_reference_from_webhook(payload)
+        logger.info("Paystack webhook received for %s event=%s", reference or "unknown", payload.get("event"))
+
+        result = handle_paystack_webhook(payload)
         if result:
-            return Response({"message": "Deposit completed.", "reference": result["reference"]})
-        return Response({"message": "Webhook received."})
+            logger.info("Paystack webhook completed deposit %s", result["reference"])
+            return Response(
+                {"message": "Deposit completed.", "reference": result["reference"]},
+                status=status.HTTP_200_OK,
+            )
+        return Response({"message": "Webhook received."}, status=status.HTTP_200_OK)
+
+
+# Moolre webhook disabled — kept for reference.
+# class MoolrePaymentWebhookView(APIView):
+#     permission_classes = [AllowAny]
+#     authentication_classes = []
+#
+#     def post(self, request):
+#         ...
 
 
 class AccountWithdrawalsView(APIView):
