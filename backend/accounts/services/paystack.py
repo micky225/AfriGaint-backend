@@ -51,6 +51,42 @@ def amount_to_subunit(amount) -> int:
     return int((Decimal(str(amount)) * 100).quantize(Decimal("1")))
 
 
+def paystack_channels() -> list[str]:
+    raw = getattr(settings, "PAYSTACK_CHANNELS", ["card", "bank", "mobile_money"])
+    if isinstance(raw, str):
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    return list(raw)
+
+
+def paystack_callback_url() -> str:
+    configured = (getattr(settings, "PAYSTACK_CALLBACK_URL", "") or "").strip()
+    if configured and "payments/paystack/webhook" not in configured:
+        return configured
+    frontend = (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
+    return f"{frontend}/deposit/callback" if frontend else ""
+
+
+def extract_channel(data: dict) -> str:
+    tx = data.get("data") or {}
+    return str(tx.get("channel") or "").strip().lower()
+
+
+def extract_gateway_status(data: dict) -> str:
+    tx = data.get("data") or {}
+    return str(tx.get("status") or "").strip().lower()
+
+
+def pending_payment_message(channel: str) -> str:
+    if channel == "bank":
+        return (
+            "Bank transfer initiated. Complete the transfer from your bank app, then wait "
+            "for confirmation. Your balance updates automatically once Paystack receives it."
+        )
+    if channel == "card":
+        return "Card payment is still processing. Please wait a moment and check again."
+    return "Payment is still pending."
+
+
 def initialize_transaction(
     *,
     email: str,
@@ -66,9 +102,12 @@ def initialize_transaction(
         "amount": amount_to_subunit(amount),
         "currency": settings.PAYSTACK_CURRENCY,
         "reference": reference,
-        "callback_url": settings.PAYSTACK_CALLBACK_URL,
+        "channels": paystack_channels(),
         "metadata": metadata or {},
     }
+    callback_url = paystack_callback_url()
+    if callback_url:
+        payload["callback_url"] = callback_url
 
     url = f"{PAYSTACK_API_BASE}/transaction/initialize"
     try:
@@ -89,19 +128,20 @@ def initialize_transaction(
         )
 
     data = body.get("data") or {}
+    access_code = str(data.get("access_code") or "").strip()
     payment_url = str(data.get("authorization_url") or "").strip()
-    if not payment_url:
+    if not access_code and not payment_url:
         raise PaystackError(
-            "Payment page could not be created.",
-            code="payment_url_missing",
+            "Payment could not be started.",
+            code="payment_start_failed",
             response=body,
         )
 
     return {
         "payment_status": "pending",
-        "message": "Complete payment on the Paystack checkout page.",
+        "message": "Complete payment in the Paystack modal.",
         "payment_url": payment_url,
-        "access_code": str(data.get("access_code") or ""),
+        "access_code": access_code,
         "provider_reference": str(data.get("reference") or reference),
         "provider_response": body,
     }

@@ -239,7 +239,7 @@ class DepositResultSerializer(serializers.Serializer):
     session_id = serializers.CharField(required=False, allow_blank=True)
     payment_url = serializers.URLField(required=False, allow_blank=True)
     access_code = serializers.CharField(required=False, allow_blank=True)
-    paystack_public_key = serializers.CharField(required=False, allow_blank=True)
+    payment_channel = serializers.CharField(required=False, allow_blank=True)
 
 
 class CreateWithdrawalSerializer(serializers.Serializer):

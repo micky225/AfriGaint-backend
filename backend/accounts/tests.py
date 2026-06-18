@@ -27,7 +27,8 @@ PAYSTACK_SETTINGS = {
     "PAYSTACK_SECRET_KEY": "sk_test_secret",
     "PAYSTACK_PUBLIC_KEY": "pk_test_public",
     "PAYSTACK_CURRENCY": "GHS",
-    "PAYSTACK_CALLBACK_URL": "https://example.com/api/auth/payments/paystack/webhook/",
+    "PAYSTACK_CALLBACK_URL": "https://example.com/deposit/callback",
+    "PAYSTACK_CHANNELS": ["card", "bank", "mobile_money"],
 }
 
 
@@ -209,6 +210,8 @@ class PaystackPaymentTests(TestCase):
         self.assertEqual(payload["reference"], "DEP-TEST")
         self.assertEqual(payload["amount"], 40000)
         self.assertEqual(payload["currency"], "GHS")
+        self.assertEqual(payload["channels"], ["card", "bank", "mobile_money"])
+        self.assertEqual(payload["callback_url"], "https://example.com/deposit/callback")
 
 
 class PaystackWebhookParsingTests(TestCase):

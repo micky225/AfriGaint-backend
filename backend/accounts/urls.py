@@ -13,6 +13,7 @@ urlpatterns = [
     path("account/deposits/", views.AccountDepositsView.as_view(), name="account-deposits"),
     path("account/deposit-options/", views.DepositOptionsView.as_view(), name="account-deposit-options"),
     path("account/deposits/<str:reference>/", views.DepositStatusView.as_view(), name="deposit-status"),
+    path("payments/verify/", views.PaystackVerifyPaymentView.as_view(), name="paystack-verify"),
     path("payments/paystack/webhook/", views.PaystackPaymentWebhookView.as_view(), name="paystack-webhook"),
     # path("payments/moolre/webhook/", views.MoolrePaymentWebhookView.as_view(), name="moolre-webhook"),
     path("account/withdrawals/", views.AccountWithdrawalsView.as_view(), name="account-withdrawals"),

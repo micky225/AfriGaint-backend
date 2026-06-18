@@ -280,7 +280,7 @@ class DepositOptionsView(APIView):
                 "minimum_amount": minimum,
                 "required_fields": ["amount"],
                 "paystack_public_key": settings.PAYSTACK_PUBLIC_KEY,
-                "note": "You will be redirected to Paystack to complete your deposit.",
+                "note": "Pay with card, bank transfer, or mobile money via Paystack.",
             }
         )
 
@@ -313,6 +313,49 @@ class DepositStatusView(APIView):
         )
 
 
+class PaystackVerifyPaymentView(APIView):
+    """Verify Paystack payment — supports async bank transfers via pending polling."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        reference = (request.data.get("reference") or "").strip()
+        if not reference:
+            return Response(
+                {"success": False, "detail": "reference is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account, _ = MyAccount.objects.get_or_create(user=request.user)
+        if not Deposit.objects.filter(
+            transaction__reference=reference,
+            transaction__account=account,
+        ).exists():
+            return Response(
+                {"success": False, "detail": "Deposit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            result = sync_deposit_status(reference)
+        except DepositError as exc:
+            return Response(
+                {"success": False, "detail": exc.message, "code": exc.code},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment_status = result.get("payment_status")
+        success = payment_status == "completed"
+        payload = {
+            "success": success,
+            "pending": payment_status == "pending",
+            "deposit": DepositResultSerializer(result).data,
+        }
+        if not success and payment_status == "pending":
+            payload["detail"] = result.get("message") or "Payment is still pending."
+        return Response(payload)
+
+
 class PaystackPaymentWebhookView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -325,7 +368,13 @@ class PaystackPaymentWebhookView(APIView):
 
         payload = request.data if isinstance(request.data, dict) else {}
         reference = extract_reference_from_webhook(payload)
-        logger.info("Paystack webhook received for %s event=%s", reference or "unknown", payload.get("event"))
+        channel = (payload.get("data") or {}).get("channel", "")
+        logger.info(
+            "Paystack webhook received for %s event=%s channel=%s",
+            reference or "unknown",
+            payload.get("event"),
+            channel or "unknown",
+        )
 
         result = handle_paystack_webhook(payload)
         if result:

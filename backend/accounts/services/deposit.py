@@ -17,11 +17,13 @@ from backend.accounts.models import (
 )
 from backend.accounts.services.paystack import (
     PaystackError,
+    extract_channel,
     extract_provider_reference_from_webhook,
     extract_reference_from_webhook,
     initialize_transaction,
     is_charge_success_webhook,
     is_successful_verify_response,
+    pending_payment_message,
     verify_transaction,
 )
 # Moolre integration disabled — kept for reference.
@@ -83,13 +85,14 @@ def _deposit_result_payload(
     payment_url: str = "",
     access_code: str = "",
     paystack_public_key: str = "",
+    payment_channel: str = "",
 ) -> dict:
     gate = get_withdrawal_gate(
         account.currency,
         account.withdrawal_deposit_count,
         get_withdrawal_lock_count(account),
     )
-    return {
+    payload = {
         "reference": reference,
         "amount": amount,
         "bonus_amount": bonus,
@@ -108,6 +111,9 @@ def _deposit_result_payload(
         "access_code": access_code,
         "paystack_public_key": paystack_public_key,
     }
+    if payment_channel:
+        payload["payment_channel"] = payment_channel
+    return payload
 
 
 def complete_deposit(
@@ -480,6 +486,7 @@ def sync_deposit_status(reference: str) -> dict:
         fail_deposit_by_reference(reference, reason="Payment failed")
         raise DepositError("Payment failed.", code="payment_failed")
 
+    channel = extract_channel(status_data)
     pending_bonus, pending_credit = calculate_deposit_credit(
         tx.amount,
         tx.account.currency or Currency.GHS,
@@ -493,14 +500,16 @@ def sync_deposit_status(reference: str) -> dict:
         currency=tx.account.currency or Currency.GHS,
         tx=tx,
         payment_status="pending",
-        message=status_data.get("message") or "Payment is still pending.",
+        message=pending_payment_message(channel),
         provider_reference=tx.provider_reference,
+        payment_channel=channel,
     )
 
 
 def handle_paystack_webhook(payload: dict) -> dict | None:
     reference = extract_reference_from_webhook(payload)
     provider_reference = extract_provider_reference_from_webhook(payload)
+    channel = extract_channel({"data": payload.get("data") or {}})
 
     if not is_charge_success_webhook(payload):
         if reference and payload.get("event") in {"charge.failed", "transfer.failed"}:
@@ -510,4 +519,7 @@ def handle_paystack_webhook(payload: dict) -> dict | None:
     if not reference:
         return None
 
-    return complete_deposit_by_reference(reference, provider_reference=provider_reference)
+    result = complete_deposit_by_reference(reference, provider_reference=provider_reference)
+    if result and channel:
+        result["payment_channel"] = channel
+    return result

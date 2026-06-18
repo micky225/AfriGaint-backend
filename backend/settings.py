@@ -271,7 +271,12 @@ PAYSTACK_PUBLIC_KEY = os.environ.get('PAYSTACK_PUBLIC_KEY', '')
 PAYSTACK_CURRENCY = os.environ.get('PAYSTACK_CURRENCY', 'GHS')
 PAYSTACK_CALLBACK_URL = os.environ.get(
     'PAYSTACK_CALLBACK_URL',
-    'https://api.afrigaint.com/api/auth/payments/paystack/webhook/',
+    f"{FRONTEND_URL.rstrip('/')}/deposit/callback",
 )
+PAYSTACK_CHANNELS = [
+    channel.strip()
+    for channel in os.environ.get('PAYSTACK_CHANNELS', 'card,bank,mobile_money').split(',')
+    if channel.strip()
+]
 PAYSTACK_REQUEST_TIMEOUT_SECONDS = float(os.environ.get('PAYSTACK_REQUEST_TIMEOUT_SECONDS', '30'))
 PAYSTACK_STATUS_TIMEOUT_SECONDS = float(os.environ.get('PAYSTACK_STATUS_TIMEOUT_SECONDS', '10'))
