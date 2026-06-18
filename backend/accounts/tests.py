@@ -33,8 +33,8 @@ PAYSTACK_SETTINGS = {
 
 class DepositRulesTests(TestCase):
     def test_minimum_deposit_amounts(self):
-        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("1"))
-        self.assertEqual(get_min_deposit(Currency.NGN), Decimal("3000"))
+        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("300"))
+        self.assertEqual(get_min_deposit(Currency.NGN), Decimal("30000"))
 
     def test_bonus_only_at_or_above_threshold(self):
         bonus, total = calculate_deposit_credit(Decimal("2999.99"), Currency.GHS)
@@ -57,7 +57,7 @@ class DepositServiceTests(TestCase):
 
     def test_rejects_below_minimum(self):
         with self.assertRaises(DepositError):
-            process_deposit(self.account, Decimal("0"))
+            process_deposit(self.account, Decimal("100"))
 
     def test_credits_balance_one_to_one_with_bonus_reported(self):
         result = process_deposit(self.account, Decimal("3000"))
@@ -338,7 +338,7 @@ class DepositApiTests(TestCase):
         response = self.client.post(
             "/api/auth/account/deposits/",
             {
-                "amount": "3000.00",
+                "amount": "30000.00",
                 "method": "bank",
                 "transaction_id": "NGN-REF-12345",
             },
@@ -358,7 +358,7 @@ class DepositApiTests(TestCase):
         response = self.client.post(
             "/api/auth/account/deposits/",
             {
-                "amount": "3000.00",
+                "amount": "30000.00",
                 "method": "bank",
             },
             format="json",
@@ -395,7 +395,7 @@ class WithdrawalGateTests(TestCase):
         )
 
     def test_three_deposit_tiers_then_withdraw(self):
-        process_deposit(self.account, Decimal("400"))
+        process_deposit(self.account, Decimal("300"))
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 1)
 
@@ -457,7 +457,7 @@ class WithdrawalGateTests(TestCase):
     def test_total_pending_withdrawal_after_merge(self):
         from backend.accounts.services.withdrawal import get_total_pending_withdrawal
 
-        process_deposit(self.account, Decimal("400"))
+        process_deposit(self.account, Decimal("300"))
         process_withdrawal(self.account, Decimal("100"), payout_setting=self.payout)
         process_deposit(self.account, Decimal("1000"))
         process_withdrawal(self.account, Decimal("150"), payout_setting=self.payout)

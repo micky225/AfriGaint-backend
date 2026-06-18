@@ -3,8 +3,8 @@ from decimal import Decimal
 from backend.accounts.models import Currency
 
 MIN_DEPOSIT = {
-    Currency.GHS: Decimal("1"),
-    Currency.NGN: Decimal("3000"),
+    Currency.GHS: Decimal("300"),
+    Currency.NGN: Decimal("30000"),
 }
 
 BONUS_THRESHOLD = {
