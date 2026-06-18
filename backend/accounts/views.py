@@ -44,7 +44,7 @@ from backend.accounts.services.withdrawal import (
     get_total_pending_withdrawal,
     process_withdrawal,
 )
-from backend.accounts.withdrawal_rules import get_withdrawal_gate
+from backend.accounts.withdrawal_rules import get_withdrawal_gate, get_withdrawal_lock_count
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -152,7 +152,11 @@ class AccountSummaryView(APIView):
 
     def get(self, request):
         account, _ = MyAccount.objects.get_or_create(user=request.user)
-        gate = get_withdrawal_gate(account.currency, account.withdrawal_deposit_count)
+        gate = get_withdrawal_gate(
+            account.currency,
+            account.withdrawal_deposit_count,
+            get_withdrawal_lock_count(account),
+        )
         payload = {
             "phone": request.user.phone,
             "email": request.user.email,
@@ -248,7 +252,13 @@ class DepositOptionsView(APIView):
     def get(self, request):
         account, _ = MyAccount.objects.get_or_create(user=request.user)
         currency = account.currency or Currency.GHS
-        minimum = str(get_withdrawal_gate(currency, account.withdrawal_deposit_count)["next_deposit_minimum"])
+        minimum = str(
+            get_withdrawal_gate(
+                currency,
+                account.withdrawal_deposit_count,
+                get_withdrawal_lock_count(account),
+            )["next_deposit_minimum"]
+        )
 
         if currency == Currency.NGN:
             return Response(

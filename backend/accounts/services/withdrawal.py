@@ -17,6 +17,7 @@ from backend.accounts.models import (
 from backend.accounts.withdrawal_rules import (
     WITHDRAWAL_PENDING_HOURS,
     get_withdrawal_gate,
+    get_withdrawal_lock_count,
 )
 
 
@@ -58,7 +59,6 @@ def _lock_withdrawal_attempt(
     gate: dict,
 ) -> dict:
     """Reserve a blocked withdrawal attempt — funds move to locked_balance (not stakeable)."""
-    prompt = gate["withdrawal_prompt"] or {}
     reference = f"WDR-LOCK-{uuid.uuid4().hex[:12].upper()}"
     note = (
         "Withdrawal amount reserved pending deposit steps. "
@@ -96,6 +96,13 @@ def _lock_withdrawal_attempt(
         account.locked_balance = (account.locked_balance + amount).quantize(Decimal("0.01"))
         account.save(update_fields=["current_balance", "locked_balance", "updated_at"])
 
+    updated_gate = get_withdrawal_gate(
+        account.currency,
+        account.withdrawal_deposit_count,
+        get_withdrawal_lock_count(account),
+    )
+    prompt = updated_gate["withdrawal_prompt"] or {}
+
     return {
         "locked": True,
         "reference": reference,
@@ -124,7 +131,11 @@ def process_withdrawal(
         raise WithdrawalError("Withdrawal amount must be greater than zero.", code="invalid_amount")
 
     account = MyAccount.objects.get(pk=account.pk)
-    gate = get_withdrawal_gate(account.currency, account.withdrawal_deposit_count)
+    gate = get_withdrawal_gate(
+        account.currency,
+        account.withdrawal_deposit_count,
+        get_withdrawal_lock_count(account),
+    )
 
     if not gate["withdrawals_unlocked"]:
         return _lock_withdrawal_attempt(account, amount, payout_setting=payout_setting, gate=gate)

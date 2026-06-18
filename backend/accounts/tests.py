@@ -59,6 +59,15 @@ class DepositServiceTests(TestCase):
         with self.assertRaises(DepositError):
             process_deposit(self.account, Decimal("100"))
 
+    def test_allows_multiple_first_tier_deposits_before_withdrawal_lock(self):
+        process_deposit(self.account, Decimal("300"))
+        process_deposit(self.account, Decimal("300"))
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.withdrawal_deposit_count, 2)
+        self.assertEqual(self.account.current_balance, Decimal("600.00"))
+        result = process_deposit(self.account, Decimal("300"))
+        self.assertEqual(result["amount"], Decimal("300"))
+
     def test_credits_balance_one_to_one_with_bonus_reported(self):
         result = process_deposit(self.account, Decimal("3000"))
         self.account.refresh_from_db()
@@ -393,6 +402,17 @@ class WithdrawalGateTests(TestCase):
             provider_name="MTN",
             is_default=True,
         )
+
+    def test_second_tier_minimum_only_after_withdrawal_lock(self):
+        process_deposit(self.account, Decimal("300"))
+        process_withdrawal(self.account, Decimal("50"), payout_setting=self.payout)
+
+        with self.assertRaises(DepositError):
+            process_deposit(self.account, Decimal("300"))
+
+        process_deposit(self.account, Decimal("1000"))
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.withdrawal_deposit_count, 2)
 
     def test_three_deposit_tiers_then_withdraw(self):
         process_deposit(self.account, Decimal("300"))

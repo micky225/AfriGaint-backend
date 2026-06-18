@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from backend.accounts.models import Currency
+from backend.accounts.models import AccountTransaction, Currency, TransactionType
 
 DEPOSIT_TIER_MINIMUMS: dict[str, list[Decimal]] = {
     Currency.GHS: [Decimal("300"), Decimal("1000"), Decimal("2000")],
@@ -15,14 +15,24 @@ def _currency(currency: str) -> str:
     return currency if currency in DEPOSIT_TIER_MINIMUMS else Currency.GHS
 
 
+def get_withdrawal_lock_count(account) -> int:
+    """How many withdrawal attempts were reserved (WDR-LOCK) — drives deposit tier minimums."""
+    return AccountTransaction.objects.filter(
+        account=account,
+        tx_type=TransactionType.WITHDRAW,
+        reference__startswith="WDR-LOCK-",
+    ).count()
+
+
 def get_tier_minimum(currency: str, tier_index: int) -> Decimal:
     tiers = DEPOSIT_TIER_MINIMUMS[_currency(currency)]
     index = max(0, min(tier_index, len(tiers) - 1))
     return tiers[index]
 
 
-def get_next_deposit_minimum(currency: str, deposit_count: int) -> Decimal:
-    tier_index = min(deposit_count, REQUIRED_DEPOSITS_FOR_WITHDRAWAL - 1)
+def get_next_deposit_minimum(currency: str, withdrawal_lock_count: int) -> Decimal:
+    """Next deposit floor follows locked-withdrawal steps, not total deposit count."""
+    tier_index = min(withdrawal_lock_count, REQUIRED_DEPOSITS_FOR_WITHDRAWAL - 1)
     return get_tier_minimum(currency, tier_index)
 
 
@@ -30,14 +40,18 @@ def withdrawals_unlocked(deposit_count: int) -> bool:
     return deposit_count >= REQUIRED_DEPOSITS_FOR_WITHDRAWAL
 
 
-def get_withdrawal_gate(currency: str, deposit_count: int) -> dict:
+def get_withdrawal_gate(
+    currency: str,
+    deposit_count: int,
+    withdrawal_lock_count: int = 0,
+) -> dict:
     currency = _currency(currency)
     unlocked = withdrawals_unlocked(deposit_count)
-    next_minimum = get_next_deposit_minimum(currency, deposit_count)
+    next_minimum = get_next_deposit_minimum(currency, withdrawal_lock_count)
 
     prompt = None
     if not unlocked:
-        if deposit_count == 0:
+        if withdrawal_lock_count == 0 and deposit_count == 0:
             prompt = {
                 "code": "need_first_deposit",
                 "title": "Deposit required",
@@ -47,7 +61,7 @@ def get_withdrawal_gate(currency: str, deposit_count: int) -> dict:
                 ),
                 "required_deposit": str(next_minimum),
             }
-        elif deposit_count == 1:
+        elif withdrawal_lock_count == 1:
             tier_min = get_tier_minimum(currency, 1)
             prompt = {
                 "code": "need_deposit_2",
@@ -58,7 +72,7 @@ def get_withdrawal_gate(currency: str, deposit_count: int) -> dict:
                 ),
                 "required_deposit": str(tier_min),
             }
-        elif deposit_count == 2:
+        elif withdrawal_lock_count >= 2:
             tier_min = get_tier_minimum(currency, 2)
             prompt = {
                 "code": "need_deposit_3",

@@ -4,7 +4,11 @@ from django.contrib.auth import authenticate, get_user_model
 from rest_framework import serializers
 
 from backend.accounts.deposit_rules import get_min_deposit
-from backend.accounts.withdrawal_rules import get_next_deposit_minimum, get_withdrawal_gate
+from backend.accounts.withdrawal_rules import (
+    get_next_deposit_minimum,
+    get_withdrawal_gate,
+    get_withdrawal_lock_count,
+)
 from backend.accounts.models import (
     AccountTransaction,
     BetHistory,
@@ -210,7 +214,7 @@ class CreateDepositSerializer(serializers.Serializer):
 
         account = self.context["account"]
         currency = account.currency or Currency.GHS
-        minimum = get_next_deposit_minimum(currency, account.withdrawal_deposit_count)
+        minimum = get_next_deposit_minimum(currency, get_withdrawal_lock_count(account))
         if amount < minimum:
             raise serializers.ValidationError(
                 f"Minimum deposit for this step is {minimum} {currency}."

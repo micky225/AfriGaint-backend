@@ -36,6 +36,7 @@ from backend.accounts.withdrawal_rules import (
     REQUIRED_DEPOSITS_FOR_WITHDRAWAL,
     get_next_deposit_minimum,
     get_withdrawal_gate,
+    get_withdrawal_lock_count,
 )
 
 
@@ -51,7 +52,7 @@ def _validate_deposit_amount(account: MyAccount, amount: Decimal) -> str:
         raise DepositError("Deposit amount must be greater than zero.")
 
     currency = account.currency or Currency.GHS
-    minimum = get_next_deposit_minimum(currency, account.withdrawal_deposit_count)
+    minimum = get_next_deposit_minimum(currency, get_withdrawal_lock_count(account))
     if amount < minimum:
         raise DepositError(
             f"Minimum deposit for this step is {minimum} {currency}.",
@@ -83,7 +84,11 @@ def _deposit_result_payload(
     access_code: str = "",
     paystack_public_key: str = "",
 ) -> dict:
-    gate = get_withdrawal_gate(account.currency, account.withdrawal_deposit_count)
+    gate = get_withdrawal_gate(
+        account.currency,
+        account.withdrawal_deposit_count,
+        get_withdrawal_lock_count(account),
+    )
     return {
         "reference": reference,
         "amount": amount,
