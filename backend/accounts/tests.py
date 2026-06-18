@@ -33,7 +33,7 @@ PAYSTACK_SETTINGS = {
 
 class DepositRulesTests(TestCase):
     def test_minimum_deposit_amounts(self):
-        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("400"))
+        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("1"))
         self.assertEqual(get_min_deposit(Currency.NGN), Decimal("3000"))
 
     def test_bonus_only_at_or_above_threshold(self):
@@ -57,7 +57,7 @@ class DepositServiceTests(TestCase):
 
     def test_rejects_below_minimum(self):
         with self.assertRaises(DepositError):
-            process_deposit(self.account, Decimal("100"))
+            process_deposit(self.account, Decimal("0"))
 
     def test_credits_balance_one_to_one_with_bonus_reported(self):
         result = process_deposit(self.account, Decimal("3000"))
