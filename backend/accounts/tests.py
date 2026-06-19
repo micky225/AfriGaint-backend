@@ -417,6 +417,33 @@ class WithdrawalGateTests(TestCase):
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 2)
 
+    def test_first_withdrawal_after_two_deposits_prompts_1000_not_2000(self):
+        process_deposit(self.account, Decimal("300"))
+        process_deposit(self.account, Decimal("300"))
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.withdrawal_deposit_count, 2)
+
+        locked_result = process_withdrawal(self.account, Decimal("50"), payout_setting=self.payout)
+        self.assertTrue(locked_result["locked"])
+        self.assertEqual(locked_result["withdrawal_prompt"]["code"], "need_deposit_2")
+        self.assertEqual(locked_result["withdrawal_prompt"]["required_deposit"], "1000")
+
+    def test_repeat_withdraw_while_locked_does_not_escalate_prompt(self):
+        process_deposit(self.account, Decimal("300"))
+        first_lock = process_withdrawal(self.account, Decimal("50"), payout_setting=self.payout)
+        second_lock = process_withdrawal(self.account, Decimal("25"), payout_setting=self.payout)
+
+        self.assertEqual(first_lock["withdrawal_prompt"]["required_deposit"], "1000")
+        self.assertEqual(second_lock["withdrawal_prompt"]["required_deposit"], "1000")
+        self.assertEqual(
+            AccountTransaction.objects.filter(
+                account=self.account,
+                reference__startswith="WDR-LOCK-",
+                status=TransactionStatus.PENDING,
+            ).count(),
+            1,
+        )
+
     def test_three_deposit_tiers_then_withdraw(self):
         process_deposit(self.account, Decimal("300"))
         self.account.refresh_from_db()

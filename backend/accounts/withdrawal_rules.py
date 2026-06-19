@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from backend.accounts.models import AccountTransaction, Currency, TransactionType
+from backend.accounts.models import AccountTransaction, Currency, TransactionStatus, TransactionType
 
 DEPOSIT_TIER_MINIMUMS: dict[str, list[Decimal]] = {
     Currency.GHS: [Decimal("300"), Decimal("1000"), Decimal("2000")],
@@ -16,11 +16,12 @@ def _currency(currency: str) -> str:
 
 
 def get_withdrawal_lock_count(account) -> int:
-    """How many withdrawal attempts were reserved (WDR-LOCK) — drives deposit tier minimums."""
+    """Active locked-withdrawal attempts — drives the next required deposit tier."""
     return AccountTransaction.objects.filter(
         account=account,
         tx_type=TransactionType.WITHDRAW,
         reference__startswith="WDR-LOCK-",
+        status=TransactionStatus.PENDING,
     ).count()
 
 

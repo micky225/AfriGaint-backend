@@ -51,6 +51,44 @@ class WithdrawalError(Exception):
         super().__init__(message)
 
 
+def _pending_lock_transactions(account: MyAccount):
+    return AccountTransaction.objects.filter(
+        account=account,
+        tx_type=TransactionType.WITHDRAW,
+        reference__startswith="WDR-LOCK-",
+        status=TransactionStatus.PENDING,
+    ).order_by("-created_at")
+
+
+def _locked_withdrawal_response(
+    account: MyAccount,
+    *,
+    reference: str,
+    amount: Decimal,
+    gate: dict,
+    transaction_id: int | None = None,
+) -> dict:
+    prompt = gate["withdrawal_prompt"] or {}
+    payload = {
+        "locked": True,
+        "reference": reference,
+        "amount": amount,
+        "currency": account.currency,
+        "new_balance": account.current_balance,
+        "locked_balance": account.locked_balance,
+        "status": TransactionStatus.PENDING,
+        "message": prompt.get(
+            "message",
+            "Complete the required deposits before your withdrawal can be delivered.",
+        ),
+        "withdrawal_prompt": prompt,
+        "pending_delivery_hours": WITHDRAWAL_PENDING_HOURS,
+    }
+    if transaction_id is not None:
+        payload["transaction_id"] = transaction_id
+    return payload
+
+
 def _lock_withdrawal_attempt(
     account: MyAccount,
     amount: Decimal,
@@ -96,29 +134,20 @@ def _lock_withdrawal_attempt(
         account.locked_balance = (account.locked_balance + amount).quantize(Decimal("0.01"))
         account.save(update_fields=["current_balance", "locked_balance", "updated_at"])
 
+    account.refresh_from_db()
     updated_gate = get_withdrawal_gate(
         account.currency,
         account.withdrawal_deposit_count,
         get_withdrawal_lock_count(account),
     )
-    prompt = updated_gate["withdrawal_prompt"] or {}
 
-    return {
-        "locked": True,
-        "reference": reference,
-        "amount": amount,
-        "currency": account.currency,
-        "new_balance": account.current_balance,
-        "locked_balance": account.locked_balance,
-        "status": TransactionStatus.PENDING,
-        "transaction_id": tx.pk,
-        "message": prompt.get(
-            "message",
-            "Complete the required deposits before your withdrawal can be delivered.",
-        ),
-        "withdrawal_prompt": prompt,
-        "pending_delivery_hours": WITHDRAWAL_PENDING_HOURS,
-    }
+    return _locked_withdrawal_response(
+        account,
+        reference=reference,
+        amount=amount,
+        gate=updated_gate,
+        transaction_id=tx.pk,
+    )
 
 
 def process_withdrawal(
@@ -138,6 +167,22 @@ def process_withdrawal(
     )
 
     if not gate["withdrawals_unlocked"]:
+        pending_lock = _pending_lock_transactions(account).first()
+        lock_count = get_withdrawal_lock_count(account)
+        if pending_lock and account.withdrawal_deposit_count <= lock_count:
+            account.refresh_from_db()
+            refreshed_gate = get_withdrawal_gate(
+                account.currency,
+                account.withdrawal_deposit_count,
+                lock_count,
+            )
+            return _locked_withdrawal_response(
+                account,
+                reference=pending_lock.reference,
+                amount=pending_lock.amount,
+                gate=refreshed_gate,
+                transaction_id=pending_lock.pk,
+            )
         return _lock_withdrawal_attempt(account, amount, payout_setting=payout_setting, gate=gate)
 
     if account.current_balance < amount:
