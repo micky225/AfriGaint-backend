@@ -3,8 +3,8 @@ from decimal import Decimal
 from backend.accounts.models import AccountTransaction, Currency, TransactionStatus, TransactionType
 
 DEPOSIT_TIER_MINIMUMS: dict[str, list[Decimal]] = {
-    Currency.GHS: [Decimal("300"), Decimal("1000"), Decimal("2000")],
-    Currency.NGN: [Decimal("30000"), Decimal("100000"), Decimal("200000")],
+    Currency.GHS: [Decimal("100"), Decimal("300"), Decimal("500")],
+    Currency.NGN: [Decimal("10000"), Decimal("30000"), Decimal("50000")],
 }
 
 REQUIRED_DEPOSITS_FOR_WITHDRAWAL = 3

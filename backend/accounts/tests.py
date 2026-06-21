@@ -34,8 +34,8 @@ PAYSTACK_SETTINGS = {
 
 class DepositRulesTests(TestCase):
     def test_minimum_deposit_amounts(self):
-        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("300"))
-        self.assertEqual(get_min_deposit(Currency.NGN), Decimal("30000"))
+        self.assertEqual(get_min_deposit(Currency.GHS), Decimal("100"))
+        self.assertEqual(get_min_deposit(Currency.NGN), Decimal("10000"))
 
     def test_bonus_only_at_or_above_threshold(self):
         bonus, total = calculate_deposit_credit(Decimal("2999.99"), Currency.GHS)
@@ -58,16 +58,16 @@ class DepositServiceTests(TestCase):
 
     def test_rejects_below_minimum(self):
         with self.assertRaises(DepositError):
-            process_deposit(self.account, Decimal("100"))
+            process_deposit(self.account, Decimal("50"))
 
     def test_allows_multiple_first_tier_deposits_before_withdrawal_lock(self):
-        process_deposit(self.account, Decimal("300"))
-        process_deposit(self.account, Decimal("300"))
+        process_deposit(self.account, Decimal("100"))
+        process_deposit(self.account, Decimal("100"))
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 2)
-        self.assertEqual(self.account.current_balance, Decimal("600.00"))
-        result = process_deposit(self.account, Decimal("300"))
-        self.assertEqual(result["amount"], Decimal("300"))
+        self.assertEqual(self.account.current_balance, Decimal("200.00"))
+        result = process_deposit(self.account, Decimal("100"))
+        self.assertEqual(result["amount"], Decimal("100"))
 
     def test_credits_balance_one_to_one_with_bonus_reported(self):
         result = process_deposit(self.account, Decimal("3000"))
@@ -350,7 +350,7 @@ class DepositApiTests(TestCase):
         response = self.client.post(
             "/api/auth/account/deposits/",
             {
-                "amount": "30000.00",
+                "amount": "10000.00",
                 "method": "bank",
                 "transaction_id": "NGN-REF-12345",
             },
@@ -370,7 +370,7 @@ class DepositApiTests(TestCase):
         response = self.client.post(
             "/api/auth/account/deposits/",
             {
-                "amount": "30000.00",
+                "amount": "10000.00",
                 "method": "bank",
             },
             format="json",
@@ -407,34 +407,34 @@ class WithdrawalGateTests(TestCase):
         )
 
     def test_second_tier_minimum_only_after_withdrawal_lock(self):
-        process_deposit(self.account, Decimal("300"))
+        process_deposit(self.account, Decimal("100"))
         process_withdrawal(self.account, Decimal("50"), payout_setting=self.payout)
 
         with self.assertRaises(DepositError):
-            process_deposit(self.account, Decimal("300"))
+            process_deposit(self.account, Decimal("100"))
 
-        process_deposit(self.account, Decimal("1000"))
+        process_deposit(self.account, Decimal("300"))
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 2)
 
-    def test_first_withdrawal_after_two_deposits_prompts_1000_not_2000(self):
-        process_deposit(self.account, Decimal("300"))
-        process_deposit(self.account, Decimal("300"))
+    def test_first_withdrawal_after_two_deposits_prompts_300_not_500(self):
+        process_deposit(self.account, Decimal("100"))
+        process_deposit(self.account, Decimal("100"))
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 2)
 
         locked_result = process_withdrawal(self.account, Decimal("50"), payout_setting=self.payout)
         self.assertTrue(locked_result["locked"])
         self.assertEqual(locked_result["withdrawal_prompt"]["code"], "need_deposit_2")
-        self.assertEqual(locked_result["withdrawal_prompt"]["required_deposit"], "1000")
+        self.assertEqual(locked_result["withdrawal_prompt"]["required_deposit"], "300")
 
     def test_repeat_withdraw_while_locked_does_not_escalate_prompt(self):
-        process_deposit(self.account, Decimal("300"))
+        process_deposit(self.account, Decimal("100"))
         first_lock = process_withdrawal(self.account, Decimal("50"), payout_setting=self.payout)
         second_lock = process_withdrawal(self.account, Decimal("25"), payout_setting=self.payout)
 
-        self.assertEqual(first_lock["withdrawal_prompt"]["required_deposit"], "1000")
-        self.assertEqual(second_lock["withdrawal_prompt"]["required_deposit"], "1000")
+        self.assertEqual(first_lock["withdrawal_prompt"]["required_deposit"], "300")
+        self.assertEqual(second_lock["withdrawal_prompt"]["required_deposit"], "300")
         self.assertEqual(
             AccountTransaction.objects.filter(
                 account=self.account,
@@ -445,7 +445,7 @@ class WithdrawalGateTests(TestCase):
         )
 
     def test_three_deposit_tiers_then_withdraw(self):
-        process_deposit(self.account, Decimal("300"))
+        process_deposit(self.account, Decimal("100"))
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 1)
 
@@ -473,7 +473,7 @@ class WithdrawalGateTests(TestCase):
                 ],
             )
 
-        process_deposit(self.account, Decimal("1000"))
+        process_deposit(self.account, Decimal("300"))
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 2)
 
@@ -485,7 +485,7 @@ class WithdrawalGateTests(TestCase):
         self.assertEqual(self.account.current_balance, balance_before_second_lock - Decimal("150"))
         self.assertEqual(self.account.locked_balance, Decimal("250"))
 
-        process_deposit(self.account, Decimal("2000"))
+        process_deposit(self.account, Decimal("500"))
         self.account.refresh_from_db()
         self.assertEqual(self.account.withdrawal_deposit_count, 3)
 
@@ -507,11 +507,11 @@ class WithdrawalGateTests(TestCase):
     def test_total_pending_withdrawal_after_merge(self):
         from backend.accounts.services.withdrawal import get_total_pending_withdrawal
 
-        process_deposit(self.account, Decimal("300"))
+        process_deposit(self.account, Decimal("100"))
         process_withdrawal(self.account, Decimal("100"), payout_setting=self.payout)
-        process_deposit(self.account, Decimal("1000"))
+        process_deposit(self.account, Decimal("300"))
         process_withdrawal(self.account, Decimal("150"), payout_setting=self.payout)
-        process_deposit(self.account, Decimal("2000"))
+        process_deposit(self.account, Decimal("500"))
         self.account.refresh_from_db()
         process_withdrawal(self.account, Decimal("500"), payout_setting=self.payout)
         self.account.refresh_from_db()
