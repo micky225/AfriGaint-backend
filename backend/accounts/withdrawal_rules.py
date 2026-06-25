@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal 
 
 from backend.accounts.models import AccountTransaction, Currency, TransactionStatus, TransactionType
 
